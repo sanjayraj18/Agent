@@ -33,10 +33,10 @@ _PATTERNS: list[tuple[re.Pattern[str], object]] = [
     (re.compile(r"(?i)\b(authorization\s*[:=]\s*)(?:bearer\s+)?\S+"), r"\1***"),
     (re.compile(r"(?i)\b(x-api-key\s*[:=]\s*)\S+"), r"\1***"),
     # Generic key=value / "key": "value" shapes, whatever the value looks like
-    (re.compile(
+     (re.compile(
         r"(?i)([\"']?\b(?:api[_-]?key|secret|password|passwd|token|"
         r"refresh[_-]?token|access[_-]?token|client[_-]?secret)\b[\"']?"
-        r"\s*[:=]\s*)([\"']?)([^\s,;}\"']+)\2"),
+        r"\s*[:=]\s*)([\"']?)(?![^\s,;}\"']*\*\*\*)([^\s,;}\"']+)\2"),
      r"\1\2***\2"),
 ]
 
