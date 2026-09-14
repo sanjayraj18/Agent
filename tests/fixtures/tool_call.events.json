@@ -1,0 +1,72 @@
+[
+  {
+    "seq": 1,
+    "type": "assistant.start"
+  },
+  {
+    "seq": 2,
+    "type": "assistant.thinking_delta",
+    "index": 0,
+    "text": "I need to read "
+  },
+  {
+    "seq": 3,
+    "type": "assistant.thinking_delta",
+    "index": 0,
+    "text": "the test file first."
+  },
+  {
+    "seq": 4,
+    "type": "assistant.thinking_signature",
+    "index": 0,
+    "signature": "ErUBCkYIBxgCIkDq"
+  },
+  {
+    "seq": 5,
+    "type": "tool.call_start",
+    "index": 1,
+    "call_id": "toolu_01XYZ",
+    "name": "read_file"
+  },
+  {
+    "seq": 6,
+    "type": "tool.call_delta",
+    "index": 1,
+    "call_id": "toolu_01XYZ",
+    "partial_json": ""
+  },
+  {
+    "seq": 7,
+    "type": "tool.call_delta",
+    "index": 1,
+    "call_id": "toolu_01XYZ",
+    "partial_json": "{\"path\": \"te"
+  },
+  {
+    "seq": 8,
+    "type": "tool.call_delta",
+    "index": 1,
+    "call_id": "toolu_01XYZ",
+    "partial_json": "sts/test_a.py\"}"
+  },
+  {
+    "seq": 9,
+    "type": "tool.call_end",
+    "index": 1,
+    "call_id": "toolu_01XYZ",
+    "arguments": {
+      "path": "tests/test_a.py"
+    }
+  },
+  {
+    "seq": 10,
+    "type": "assistant.end",
+    "stop_reason": "tool_use",
+    "usage": {
+      "input_tokens": 3102,
+      "output_tokens": 87,
+      "cache_read_input_tokens": 0,
+      "cache_creation_input_tokens": 1840
+    }
+  }
+]

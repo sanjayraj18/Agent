@@ -1,0 +1,29 @@
+[
+  {
+    "seq": 1,
+    "type": "assistant.start"
+  },
+  {
+    "seq": 2,
+    "type": "assistant.text_delta",
+    "index": 0,
+    "text": "The config "
+  },
+  {
+    "seq": 3,
+    "type": "assistant.text_delta",
+    "index": 0,
+    "text": "lives in .agent/config.json."
+  },
+  {
+    "seq": 4,
+    "type": "assistant.end",
+    "stop_reason": "end_turn",
+    "usage": {
+      "input_tokens": 2145,
+      "output_tokens": 14,
+      "cache_read_input_tokens": 9018,
+      "cache_creation_input_tokens": 0
+    }
+  }
+]

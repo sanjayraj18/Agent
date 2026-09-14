@@ -20,8 +20,11 @@ packages = ["src/agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+anyio_mode = "auto"
 
 [dependency-groups]
 dev = [
+    "anyio>=4.15.1",
+    "httpx2>=2.12.0",
     "pytest>=9.1.1",
 ]

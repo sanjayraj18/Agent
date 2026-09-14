@@ -30,6 +30,7 @@ class SessionStarted(EventBase):
     cwd: str
     model: str
 
+
 class UserMessage(EventBase):
     type: Literal["user.message"] = "user.message"
     text: str
@@ -89,10 +90,17 @@ class ToolResult(EventBase):
 
 
 class ErrorEvent(EventBase):
-    type: Literal["error"] = "error"
-    kind: str
-    message: str
-    retryable: bool = False
+      type: Literal["error"] = "error"
+      kind: str
+      message: str
+      retryable: bool = False
+      retry_after: float | None = None
+
+
+class ThinkingSignature(EventBase):
+    type: Literal["assistant.thinking_signature"] = "assistant.thinking_signature"
+    index: int
+    signature: str
 
 
 Event = Annotated[
@@ -101,6 +109,7 @@ Event = Annotated[
         UserMessage,
         AssistantStart,
         TextDelta,
+        ThinkingSignature,
         ThinkingDelta,
         AssistantEnd,
         ToolCallStart,
