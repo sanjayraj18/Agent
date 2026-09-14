@@ -10,6 +10,12 @@ from agent.providers.base import (
     ToolResultPart, ToolSpec, ToolUsePart,
 )
 
+from pydantic import SecretStr
+
+from agent.auth.credentials import ApiKey
+
+TEST_CRED = ApiKey(value=SecretStr("sk-ant-test"))
+
 USER = [Message(role="user", content=[TextPart(text="hi")])]
 
 
@@ -103,7 +109,7 @@ SSE_OK = (
 
 def provider(handler) -> AnthropicRawProvider:
     return AnthropicRawProvider(
-        "sk-ant-test", client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        TEST_CRED, client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
     )
 
 

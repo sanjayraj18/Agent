@@ -6,7 +6,7 @@ from typing import AsyncIterator, Iterator
 @dataclass(frozen=True)
 class SSEFrame:
     event : str | None
-    data : str | None
+    data: str
     id : str | None = None
     retry : int | None = None
 

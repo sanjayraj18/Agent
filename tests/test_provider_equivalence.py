@@ -13,6 +13,12 @@ from agent.providers.anthropic_raw import AnthropicRawProvider
 from agent.providers.anthropic_sdk import AnthropicSDKProvider
 from agent.providers.base import EventFactory, Message, ProviderRequest, TextPart
 
+from pydantic import SecretStr
+
+from agent.auth.credentials import ApiKey
+
+TEST_CRED = ApiKey(value=SecretStr("sk-ant-test"))
+
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 FIXTURES = sorted(FIXTURE_DIR.glob("*.sse"))
 
@@ -37,7 +43,7 @@ def raw(body: bytes = b"", status: int = 200, headers: dict | None = None):
         return httpx.Response(status, content=body, headers=headers or SSE_HEADERS)
 
     return AnthropicRawProvider(
-        "k", client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        TEST_CRED, client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
     )
 
 

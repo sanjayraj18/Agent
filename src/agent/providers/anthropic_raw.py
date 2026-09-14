@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Any, AsyncIterator
 import httpx
 
+from agent.auth.credentials import Credential
 from agent.events import ErrorEvent, Event
 from agent.providers.anthropic_wire import AnthropicTranslator
 from agent.providers.base import ContentPart, EventFactory, Message, ProviderRequest
@@ -86,7 +87,8 @@ def build_body(request: ProviderRequest) -> dict[str, Any]:
         ]
 
     if request.system:
-        body["system"] = [{"type": "text", "text": request.system}]
+        system_block: dict[str, Any] = {"type": "text", "text": request.system}
+        body["system"] = [system_block]
 
     if request.cache_stable_prefix:
         if request.system:
@@ -100,8 +102,8 @@ def build_body(request: ProviderRequest) -> dict[str, Any]:
 class AnthropicRawProvider:
     name = "anthropic-raw"
 
-    def __init__(self, api_key : str, base_url :str = "https://api.anthropic.com", client : httpx.AsyncClient | None = None,  timeout: httpx.Timeout | None = None)-> None:
-        self._api_key = api_key
+    def __init__(self,credential: Credential,base_url :str = "https://api.anthropic.com", client : httpx.AsyncClient | None = None,  timeout: httpx.Timeout | None = None)-> None:
+        self._credential = credential
         self._base_url = base_url.rstrip("/")
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout or DEFAULT_TIMEOUT)
@@ -112,7 +114,7 @@ class AnthropicRawProvider:
 
     def _headers(self) -> dict[str,str]:
         return {
-            "x-api-key": self._api_key,
+             **self._credential.headers(),
             "anthropic-version": ANTHROPIC_VERSION,
             "content-type": "application/json",
             "accept": "text/event-stream",
