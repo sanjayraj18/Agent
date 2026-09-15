@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import sys
 from pathlib import Path
+from typing import AsyncIterator
 from uuid import uuid4
 from getpass import getpass
 
@@ -14,9 +15,12 @@ from agent import config, logs
 from agent.auth.credentials import ApiKey
 from agent.auth.resolver import CredentialError, resolve
 from agent.auth.store import FileStore, StoreError
-from agent.events import AssistantEnd, ErrorEvent, TextDelta, ThinkingDelta, ToolCallStart
+from agent.core.loop import AgentLoop
+from agent.events import AssistantEnd, ErrorEvent, Event, SessionStarted, TextDelta, ThinkingDelta, ToolCallStart, UserMessage
 from agent.providers.anthropic_raw import AnthropicRawProvider
 from agent.providers.base import EventFactory, Message, ProviderRequest, TextPart
+from agent.server.jsonrpc import JsonRpcServer
+from agent.tools.registry import ToolRegistry
 
 PRICING = {
     "claude-opus-5": (5.00, 25.00),
@@ -36,6 +40,49 @@ def _cost(model: str, usage) -> float | None:
     ) / 1_000_000
 
 DIM, RESET = "\033[2m", "\033[0m"
+
+
+async def _headless_run(
+    prompt: str,
+    credential,
+    settings: dict,
+) -> AsyncIterator[Event]:
+  
+    provider = AnthropicRawProvider(credential)
+    emit = EventFactory(session_id=uuid4().hex[:12])
+
+    session_started = emit(
+        SessionStarted,
+        cwd=str(Path.cwd()),
+        model=settings["model"],
+    )
+    user_message = emit(UserMessage, text=prompt)
+
+    request_template = ProviderRequest(
+        model=settings["model"],
+        max_tokens=settings["max_tokens"],
+        effort=settings["effort"],
+        messages=[],
+    )
+
+    loop = AgentLoop(
+        provider=provider,
+        request_template=request_template,
+        registry=ToolRegistry(),
+    )
+
+    try:
+        yield session_started
+        yield user_message
+
+        async for event in loop.run(
+            [session_started, user_message],
+            emit,
+        ):
+            yield event
+
+    finally:
+        await provider.aclose()
 
 
 async def _run(prompt: str, credential, settings: dict) -> int:
@@ -95,6 +142,10 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("config", help="show resolved settings and where they came from")
+    serve = sub.add_parser("serve", help="run the headless JSON-RPC server over stdin/stdout",)
+    serve.add_argument("--model")
+    serve.add_argument("--effort",choices=["low", "medium", "high", "xhigh", "max"])
+    serve.add_argument("--api-key", dest="api_key")
 
     auth = sub.add_parser("auth", help="credential commands")
     auth_sub = auth.add_subparsers(dest="auth_command", required=True)
@@ -157,6 +208,18 @@ def main() -> None:
 
     if args.command == "auth":         
         print(resolved_credential.describe())
+        return
+
+    if args.command == "serve":
+        def run_agent(prompt: str) -> AsyncIterator[Event]:
+            return _headless_run(
+                prompt,
+                resolved_credential.credential,
+                settings,
+            )
+
+        server = JsonRpcServer(run_agent)
+        asyncio.run(server.serve(sys.stdin, sys.stdout))
         return
 
     raise SystemExit(
