@@ -48,6 +48,7 @@ class ToolDispatcher:
 
 
     async def dispatch_all(self, calls :Sequence[ToolUsePart]) -> list[ToolResultPart]:
+        
         return list(
             await asyncio.gather(
                 *(self.dispatch(call) for call in calls)

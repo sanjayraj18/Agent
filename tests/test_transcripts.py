@@ -74,6 +74,7 @@ def test_chunking_never_changes_the_event_stream(fixture: Path, chunk_size):
         normalize(e) for e in replay(raw)
     ]
 
+#test
 
 @pytest.mark.parametrize("fixture", FIXTURES, ids=lambda p: p.stem)
 def test_every_transcript_ends_with_exactly_one_terminal_event(fixture: Path):
