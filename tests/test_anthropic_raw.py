@@ -5,6 +5,7 @@ import pytest
 
 from agent.events import AssistantEnd, AssistantStart, ErrorEvent, TextDelta
 from agent.providers.anthropic_raw import AnthropicRawProvider, build_body
+
 from agent.providers.base import (
     EventFactory, Message, ProviderRequest, TextPart, ThinkingPart,
     ToolResultPart, ToolSpec, ToolUsePart,
