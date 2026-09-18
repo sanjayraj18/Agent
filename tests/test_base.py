@@ -37,6 +37,7 @@ def test_event_factory_is_monotonic_and_gapless():
     assert all(e.session_id == "s1" for e in events)
 
 
+
 def test_event_factory_preserves_concrete_type():
     emit = EventFactory(session_id="s1")
     e = emit(ToolCallStart, index=0, call_id="c1", name="read")
