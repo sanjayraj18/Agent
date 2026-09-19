@@ -2,33 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Mapping
 
+from agent.core.capabilities import (
+    MODEL_CAPABILITIES,
+    ModelPricing,
+    capabilities_for_model,
+)
 from agent.events import Usage
 
 
 MILLION_TOKENS = Decimal(1_000_000)
-
-
-@dataclass(frozen=True, slots=True)
-class ModelPricing:
-    """USD prices per one million tokens for one model."""
-
-    input_per_million: Decimal
-    output_per_million: Decimal
-    cache_read_per_million: Decimal
-    cache_creation_per_million: Decimal
-
-    def __post_init__(self) -> None:
-        prices = (
-            self.input_per_million,
-            self.output_per_million,
-            self.cache_read_per_million,
-            self.cache_creation_per_million,
-        )
-
-        if any(price < 0 for price in prices):
-            raise ValueError("token prices must not be negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,31 +35,24 @@ class TurnCost:
         )
 
 
-MODEL_PRICING: dict[str, ModelPricing] = {
-    "claude-opus-5": ModelPricing(
-        input_per_million=Decimal("5.00"),
-        output_per_million=Decimal("25.00"),
-        cache_read_per_million=Decimal("0.50"),
-        cache_creation_per_million=Decimal("6.25"),
-    ),
-    "claude-sonnet-5": ModelPricing(
-        input_per_million=Decimal("3.00"),
-        output_per_million=Decimal("15.00"),
-        cache_read_per_million=Decimal("0.30"),
-        cache_creation_per_million=Decimal("3.75"),
-    ),
-    "claude-haiku-4-5": ModelPricing(
-        input_per_million=Decimal("1.00"),
-        output_per_million=Decimal("5.00"),
-        cache_read_per_million=Decimal("0.10"),
-        cache_creation_per_million=Decimal("1.25"),
-    ),
-}
+# Compatibility view for existing callers and tests.
+# The actual pricing data lives only in core/capabilities.py.
+MODEL_PRICING: Mapping[str, ModelPricing] = MappingProxyType(
+    {
+        model: capabilities.pricing
+        for model, capabilities in MODEL_CAPABILITIES.items()
+    }
+)
 
 
 def pricing_for_model(model: str) -> ModelPricing | None:
     """Return pricing when this agent knows the model; otherwise return None."""
-    return MODEL_PRICING.get(model)
+    capabilities = capabilities_for_model(model)
+
+    if capabilities is None:
+        return None
+
+    return capabilities.pricing
 
 
 def calculate_turn_cost(

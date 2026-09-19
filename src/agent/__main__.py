@@ -18,7 +18,7 @@ from agent.auth.store import FileStore, StoreError
 from agent.core.costs import calculate_known_model_cost
 from agent.core.loop import AgentLoop
 from agent.core.telemetry import SessionTelemetry
-from agent.events import AssistantEnd, ErrorEvent, Event, SessionStarted, TextDelta, ThinkingDelta, ToolCallStart, Usage, UserMessage
+from agent.events import AssistantEnd, ErrorEvent, Event, SessionStarted,ContextCompacted, TextDelta, ThinkingDelta, ToolCallStart, Usage, UserMessage
 from agent.providers.anthropic_raw import AnthropicRawProvider
 from agent.providers.base import EventFactory, Message, ProviderRequest, TextPart
 from agent.server.jsonrpc import JsonRpcServer
@@ -31,12 +31,28 @@ from agent.tools.registry import ToolRegistry
 from agent.tools.read_file import ReadFileTool
 from agent.tools.workspace import Workspace
 from agent.tools.write_file import WriteFileTool
+from agent.core.capabilities import capabilities_for_model
+
 
 PRICING = {
     "claude-opus-5": (5.00, 25.00),
     "claude-sonnet-5": (3.00, 15.00),
     "claude-haiku-4-5": (1.00, 5.00),
 }
+
+def _log_context_compaction(event: ContextCompacted) -> None:
+    logs.get("context").info(
+        "context compacted",
+        extra={
+            "previous_input_tokens": event.previous_input_tokens,
+            "new_input_tokens": event.new_input_tokens,
+            "discarded_message_count": event.discarded_message_count,
+            "preserved_file_edit_count": (
+                event.preserved_file_edit_count
+            ),
+            "todo_count": event.todo_count,
+        },
+    )
 
 def _cost(model: str, usage) -> float | None:
     if model not in PRICING:
@@ -161,6 +177,8 @@ async def _headless_run(
         ):
             if isinstance(event, AssistantEnd):
                 _log_live_telemetry(loop.telemetry)
+            elif isinstance(event, ContextCompacted):
+                _log_context_compaction(event)
             yield event
 
     finally:
@@ -252,6 +270,15 @@ def main() -> None:
 
     settings = config.values(resolved_config)
     logs.setup(level=settings["log_level"])
+
+    if args.command in {"run", "serve"}:
+        capabilities = capabilities_for_model(settings["model"])
+
+    if capabilities is None:
+        logs.get("context").warning(
+            "context management disabled for unknown model",
+            extra={"model": settings["model"]},
+        )
 
     if args.command == "config":
         print(config.render(resolved_config))

@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Literal, Sequence
 
-from agent.events import AssistantEnd, AssistantStart, ErrorEvent, Event, TextDelta, ThinkingDelta, ThinkingSignature, ToolCallEnd, ToolCallStart, ToolResult, UserMessage
+from agent.core.ledger import FileEditRecord, TaskLedgerSnapshot, TodoItem
+from agent.events import AssistantEnd, AssistantStart, ContextCompacted, ErrorEvent, Event, TextDelta, ThinkingDelta, ThinkingSignature, ToolCallEnd, ToolCallStart, ToolResult, UserMessage
 from agent.providers.base import ContentPart, Message, TextPart, ThinkingPart, ToolResultPart, ToolUsePart
 
 
@@ -70,7 +71,7 @@ def _assistant_message(blocks : dict[int, _AssistantBlock]) -> Message | None:
 
 
 #important function, will convert events to Message format which model needs
-def messages_from_events(events : Sequence[Event]) -> list[Message]:
+def messages_from_events(events : Sequence[Event], *, prefix_messages : Sequence[Message]) -> list[Message]:
 
     messages : list[Message] = []
     active_assistant : dict[int, _AssistantBlock] | None = None
@@ -176,8 +177,69 @@ def messages_from_events(events : Sequence[Event]) -> list[Message]:
                 )
             )
 
+        elif isinstance(event, ContextCompacted):
+            active_assistant = None
+            flush_tool_results()
+
         elif isinstance(event, ErrorEvent):
             active_assistant = None
 
     flush_tool_results()
     return messages
+
+
+def continuation_message(
+    original_task: str,
+    summary: str,
+    ledger: TaskLedgerSnapshot,
+) -> Message:
+    """
+    Build the compact message that starts a new context window.
+
+    It contains only durable state: the original task, model-produced summary,
+    confirmed workspace edits, and explicit TODOs.
+    """
+    if not original_task.strip():
+        raise ValueError("original_task must not be empty")
+
+    if not summary.strip():
+        raise ValueError("summary must not be empty")
+
+    text = (
+        "You are continuing an existing coding task after the previous "
+        "conversation was compacted.\n\n"
+        f"Original task:\n{original_task}\n\n"
+        f"Continuation summary:\n{summary}\n\n"
+        f"Confirmed workspace edits:\n"
+        f"{_render_file_edits(ledger.file_edits)}\n\n"
+        f"Current TODOs:\n{_render_todos(ledger.todos)}\n\n"
+        "Continue from the current workspace. Treat the workspace files as "
+        "the source of truth and verify details before changing them."
+    )
+
+    return Message(
+        role="user",
+        content=[TextPart(text=text)],
+    )
+
+
+def _render_file_edits(
+    file_edits: tuple[FileEditRecord, ...],
+) -> str:
+    if not file_edits:
+        return "(none)"
+
+    return "\n".join(
+        f"- {edit.tool_name} {edit.path}: {edit.summary}"
+        for edit in file_edits
+    )
+
+
+def _render_todos(todos: tuple[TodoItem, ...]) -> str:
+    if not todos:
+        return "(none)"
+
+    return "\n".join(
+        f"- [{todo.status}] {todo.todo_id}: {todo.description}"
+        for todo in todos
+    )

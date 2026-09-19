@@ -61,6 +61,23 @@ class AssistantEnd(EventBase):
     stop_reason: StopReason
     usage: Usage
 
+class ContextCompacted(EventBase):
+    """
+    A long conversation was replaced with a smaller continuation state.
+
+    The summary is the model-generated handoff. Counts make the operation
+    observable without placing full old conversation content in the event.
+    """
+
+    type: Literal["context.compacted"] = "context.compacted"
+    summary: str = Field(min_length=1)
+    previous_input_tokens: int = Field(ge=0)
+    new_input_tokens: int = Field(ge=0)
+    discarded_message_count: int = Field(ge=0)
+    preserved_file_edit_count: int = Field(ge=0)
+    todo_count: int = Field(ge=0)
+
+
 class ToolCallStart(EventBase):
     type: Literal["tool.call_start"] = "tool.call_start"
     index: int
@@ -112,6 +129,7 @@ Event = Annotated[
         ThinkingSignature,
         ThinkingDelta,
         AssistantEnd,
+        ContextCompacted,
         ToolCallStart,
         ToolCallDelta,
         ToolCallEnd,

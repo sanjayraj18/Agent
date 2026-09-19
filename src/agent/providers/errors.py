@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Mapping
+
 from agent.events import ErrorEvent
 from agent.providers.base import EventFactory
 
@@ -19,7 +20,8 @@ class Failure:
     retry_after: float | None = None
 
 
-# status -> (kind, retryable). Status is authoritative for `retryable`.
+# Status code -> (kind, retryable). The HTTP status is authoritative for
+# retryability: a 400 must never become retryable because of its body text.
 _STATUS_KINDS: dict[int, tuple[str, bool]] = {
     400: ("invalid_request_error", False),
     401: ("authentication_error", False),
@@ -37,7 +39,7 @@ _STATUS_KINDS: dict[int, tuple[str, bool]] = {
     529: ("overloaded_error", True),
 }
 
-# Mid-stream errors arrive with no status code — classify by type alone.
+
 _RETRYABLE_STREAM_TYPES = {
     "api_error",
     "overloaded_error",
@@ -46,12 +48,36 @@ _RETRYABLE_STREAM_TYPES = {
 }
 
 
+_CONTEXT_OVERFLOW_TYPES = {
+    "context_length_exceeded",
+    "context_window_exceeded",
+    "input_length_exceeded",
+    "request_too_large",
+}
+
+
+_CONTEXT_OVERFLOW_MARKERS = (
+    "context length",
+    "context window",
+    "maximum context",
+    "prompt is too long",
+    "prompt too long",
+    "input is too long",
+    "input too long",
+    "too many tokens",
+    "token limit",
+)
+
+
 def parse_retry_after(
-    value: str | None, *, now: datetime | None = None
+    value: str | None,
+    *,
+    now: datetime | None = None,
 ) -> float | None:
     """Retry-After is either delta-seconds or an HTTP-date. Both are legal."""
     if not value:
         return None
+
     value = value.strip()
 
     try:
@@ -63,12 +89,45 @@ def parse_retry_after(
         when = parsedate_to_datetime(value)
     except (TypeError, ValueError):
         return None
+
     if when is None:
         return None
+
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
 
-    return max(0.0, (when - (now or datetime.now(timezone.utc))).total_seconds())
+    return max(
+        0.0,
+        (when - (now or datetime.now(timezone.utc))).total_seconds(),
+    )
+
+
+def is_context_overflow(
+    *,
+    error_type: str | None = None,
+    message: str | None = None,
+    status_code: int | None = None,
+) -> bool:
+    """
+    Recognize errors where compaction may let the agent continue.
+
+    A context overflow is terminal for the current request, so it must never
+    enter the normal retry-with-delay path.
+    """
+    if status_code == 413:
+        return True
+
+    normalized_type = (error_type or "").strip().lower()
+
+    if normalized_type in _CONTEXT_OVERFLOW_TYPES:
+        return True
+
+    normalized_message = (message or "").lower()
+
+    return any(
+        marker in normalized_message
+        for marker in _CONTEXT_OVERFLOW_MARKERS
+    )
 
 
 def classify_http(
@@ -77,30 +136,57 @@ def classify_http(
     body: Any = None,
     headers: Mapping[str, str] | None = None,
 ) -> Failure:
-    """A non-200 response -> Failure."""
+    """Convert one non-200 HTTP response into a classified failure."""
     headers = headers or {}
+
     kind, retryable = _STATUS_KINDS.get(
-        status_code, (f"http_{status_code}", 500 <= status_code < 600)
+        status_code,
+        (f"http_{status_code}", 500 <= status_code < 600),
     )
 
+    provider_error_type = ""
     detail = ""
+
     if isinstance(body, dict):
-        err = body.get("error")
-        if isinstance(err, dict):
-            # The API's own type is more specific than our status map, so it
-            # refines `kind` — but it never overrides `retryable`. A 400 that
-            # happens to say "api_error" must not become retryable, or you
-            # loop forever on a malformed request.
-            kind = err.get("type") or kind
-            detail = err.get("message") or ""
+        error = body.get("error")
+
+        if isinstance(error, dict):
+            raw_type = error.get("type")
+            raw_message = error.get("message")
+
+            if isinstance(raw_type, str):
+                provider_error_type = raw_type
+                kind = raw_type
+
+            if isinstance(raw_message, str):
+                detail = raw_message
+
     elif isinstance(body, str):
         detail = body[:500]
 
+    if is_context_overflow(
+        error_type=provider_error_type or kind,
+        message=detail,
+        status_code=status_code,
+    ):
+        kind = "context_overflow"
+        retryable = False
+
+    message = (
+        f"HTTP {status_code}: {detail}"
+        if detail
+        else f"HTTP {status_code}"
+    )
+
     return Failure(
         kind=kind,
-        message=f"HTTP {status_code}: {detail}" if detail else f"HTTP {status_code}",
+        message=message,
         retryable=retryable,
-        retry_after=parse_retry_after(headers.get("retry-after")),
+        retry_after=(
+            parse_retry_after(headers.get("retry-after"))
+            if retryable
+            else None
+        ),
     )
 
 
@@ -113,16 +199,33 @@ def to_event(emit: EventFactory, failure: Failure) -> ErrorEvent:
         retry_after=failure.retry_after,
     )
 
-def classify_stream(error_type: str, message: str = "") -> Failure:
-    """A mid-stream `error` event -> Failure. HTTP 200 already succeeded."""
+
+def classify_stream(
+    error_type: str,
+    message: str = "",
+) -> Failure:
+    """Convert a mid-stream provider error into a classified failure."""
     kind = error_type or "api_error"
+
+    if is_context_overflow(
+        error_type=kind,
+        message=message,
+    ):
+        return Failure(
+            kind="context_overflow",
+            message=message,
+            retryable=False,
+        )
+
     return Failure(
-        kind=kind, message=message, retryable=kind in _RETRYABLE_STREAM_TYPES
+        kind=kind,
+        message=message,
+        retryable=kind in _RETRYABLE_STREAM_TYPES,
     )
 
 
 def classify_transport(exc: BaseException) -> Failure:
-    """A connection-level failure -> Failure. The request never got an answer."""
+    """A connection-level failure means the request never got an answer."""
     return Failure(
         kind="connection_error",
         message=f"{type(exc).__name__}: {exc}",
@@ -137,7 +240,7 @@ class RetryPolicy:
     max_attempts: int = 4
     base_delay: float = 1.0
     max_delay: float = 60.0
-    jitter: float = 0.5  # fraction of the delay that is randomized
+    jitter: float = 0.5
 
     def delay_for(
         self,
@@ -146,18 +249,28 @@ class RetryPolicy:
         *,
         rand: Callable[[], float] = random.random,
     ) -> float | None:
-        """Seconds to wait before attempt+1, or None to give up.
+        """
+        Return seconds to wait before another attempt, or None to give up.
 
-        `attempt` is 1-based: 1 means the first try just failed.
+        `attempt` is one-based: 1 means the first request just failed.
         """
         if not failure.retryable or attempt >= self.max_attempts:
             return None
 
         if failure.retry_after is not None:
             if failure.retry_after > self.max_delay:
-                return None  # longer than we are willing to stall
-            # Honor the server, then add jitter — never less than it asked.
-            return failure.retry_after * (1.0 + self.jitter * rand())
+                return None
 
-        backoff = min(self.base_delay * (2 ** (attempt - 1)), self.max_delay)
-        return backoff * (1.0 - self.jitter) + backoff * self.jitter * rand()
+            return failure.retry_after * (
+                1.0 + self.jitter * rand()
+            )
+
+        backoff = min(
+            self.base_delay * (2 ** (attempt - 1)),
+            self.max_delay,
+        )
+
+        return (
+            backoff * (1.0 - self.jitter)
+            + backoff * self.jitter * rand()
+        )
