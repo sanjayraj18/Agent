@@ -194,3 +194,71 @@ async def test_truncated_stream_surfaces_as_error():
     events = await collect(provider(handler))
     assert isinstance(events[-1], ErrorEvent)
     assert events[-1].kind == "stream_truncated"
+
+def test_stable_context_is_sent_inside_the_system_prompt_and_cached():
+    body = build_body(
+        req(
+            system="You are a coding agent.",
+            stable_context="Only modify files inside the workspace.",
+            cache_stable_prefix=True,
+        )
+    )
+
+    assert body["system"] == [
+        {
+            "type": "text",
+            "text": (
+                "You are a coding agent.\n\n"
+                "Only modify files inside the workspace."
+            ),
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
+def test_stable_context_can_be_cached_without_a_main_system_prompt():
+    body = build_body(
+        req(
+            stable_context="Only modify files inside the workspace.",
+            cache_stable_prefix=True,
+        )
+    )
+
+    assert body["system"] == [
+        {
+            "type": "text",
+            "text": "Only modify files inside the workspace.",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
+def test_cache_marker_is_not_sent_when_caching_is_disabled():
+    body = build_body(
+        req(
+            system="You are a coding agent.",
+            tools=[
+                ToolSpec(
+                    name="read_file",
+                    description="Read one file.",
+                    input_schema={},
+                )
+            ],
+            cache_stable_prefix=False,
+        )
+    )
+
+    assert "cache_control" not in body["system"][-1]
+    assert "cache_control" not in body["tools"][-1]
+
+
+def test_enabled_caching_requires_stable_content():
+    with pytest.raises(
+        ValueError,
+        match="needs at least one cacheable section",
+    ):
+        build_body(
+            req(
+                cache_stable_prefix=True,
+            )
+        )

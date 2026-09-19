@@ -60,6 +60,8 @@ def build_body(request: ProviderRequest) -> dict[str, Any]:
             f"got effort={request.effort!r}"
         )
 
+    system_prompt = request.system_prompt
+
     body: dict[str, Any] = {
         "model": request.model,
         "max_tokens": request.max_tokens,
@@ -86,15 +88,27 @@ def build_body(request: ProviderRequest) -> dict[str, Any]:
             for t in request.tools
         ]
 
-    if request.system:
-        system_block: dict[str, Any] = {"type": "text", "text": request.system}
-        body["system"] = [system_block]
+    if system_prompt:
+        system_block: dict[str, Any] = {
+            "type": "text",
+            "text": system_prompt,
+        }
+        body["system"] = [
+            system_block
+        ]
 
     if request.cache_stable_prefix:
-        if request.system:
-            body["system"][-1]["cache_control"] = {"type": "ephemeral"}
+        cache_plan = request.cache_plan
+        assert cache_plan is not None
+
+        if system_prompt:
+            body["system"][-1]["cache_control"] = {
+                "type": "ephemeral",
+            }
         elif request.tools:
-            body["tools"][-1]["cache_control"] = {"type": "ephemeral"}
+            body["tools"][-1]["cache_control"] = {
+                "type": "ephemeral",
+            }
 
     return body
 

@@ -6,6 +6,7 @@ from typing import AsyncIterator, Sequence
 
 from agent.core.conversation import messages_from_events
 from agent.core.retry import RetryPolicy
+from agent.core.telemetry import SessionTelemetry
 from agent.events import (
     AssistantEnd,
     ErrorEvent,
@@ -41,6 +42,7 @@ class AgentLoop:
         registry: ToolRegistry,
         max_iterations: int = 10,
         retry_policy: RetryPolicy | None = None,
+        telemetry: SessionTelemetry | None = None,
     ) -> None:
         if max_iterations < 1:
             raise ValueError("max_iterations must be at least 1")
@@ -50,7 +52,14 @@ class AgentLoop:
         self._registry = registry
         self._dispatcher = ToolDispatcher(registry)
         self._max_iterations = max_iterations
+        self._telemetry = telemetry or SessionTelemetry()
         self._retry_policy = retry_policy or RetryPolicy()
+
+
+    @property
+    def telemetry(self) -> SessionTelemetry:
+        """Usage and cost totals collected during this agent run."""
+        return self._telemetry
 
 
     async def run(self, initial_events: Sequence[Event],emit: EventFactory) -> AsyncIterator[Event]:
@@ -87,6 +96,12 @@ class AgentLoop:
                         "tools": self._registry.specs(),
                     }
                 )
+                cache_plan = request.cache_plan
+                stable_prefix_fingerprint = (
+                    cache_plan.stable_fingerprint
+                    if cache_plan is not None
+                    else None
+                )
 
                 pending_calls = {}
                 assistant_end = None
@@ -112,6 +127,11 @@ class AgentLoop:
 
                     elif isinstance(event, AssistantEnd):
                         assistant_end = event
+                        self._telemetry.record_turn(
+                            model=request.model,
+                            usage=event.usage,
+                            stable_prefix_fingerprint=stable_prefix_fingerprint,
+                        )
 
                     elif isinstance(event, ErrorEvent):
                         provider_error = event

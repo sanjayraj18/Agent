@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from agent.core.prompt_cache import PromptCachePlanError
+from agent.providers.base import Message, ProviderRequest, TextPart, ToolSpec
 from agent.tools.bash import BashTool
 from agent.tools.processes import ProcessRegistry
 from agent.tools.workspace import Workspace
@@ -88,3 +90,124 @@ async def test_rejects_invalid_bash_requests(
 
     assert result.is_error is True
     assert result.content == message
+
+def _tool(name: str) -> ToolSpec:
+    return ToolSpec(
+        name=name,
+        description=f"{name} tool",
+        input_schema={"type": "object"},
+    )
+
+
+def _user_message(text: str) -> Message:
+    return Message(
+        role="user",
+        content=[TextPart(text=text)],
+    )
+
+
+def test_request_has_no_cache_plan_when_caching_is_disabled():
+    request = ProviderRequest(
+        model="claude-sonnet-5",
+        max_tokens=1_024,
+        system="You are a coding agent.",
+        messages=[_user_message("Inspect the test failure.")],
+    )
+
+    assert request.cache_plan is None
+
+
+def test_request_builds_a_cache_plan_in_stable_then_dynamic_order():
+    request = ProviderRequest(
+        model="claude-sonnet-5",
+        max_tokens=1_024,
+        system="You are a coding agent.",
+        stable_context="Only modify files inside the workspace.",
+        tools=[_tool("read_file"), _tool("grep")],
+        messages=[_user_message("Inspect the test failure.")],
+        cache_stable_prefix=True,
+    )
+
+    plan = request.cache_plan
+
+    assert plan is not None
+    assert [section.kind for section in plan.sections] == [
+        "system",
+        "tools",
+        "stable_context",
+        "dynamic",
+    ]
+    assert request.system_prompt == (
+        "You are a coding agent.\n\n"
+        "Only modify files inside the workspace."
+    )
+
+
+def test_changing_messages_does_not_change_request_cache_fingerprint():
+    common_fields = {
+        "model": "claude-sonnet-5",
+        "max_tokens": 1_024,
+        "system": "You are a coding agent.",
+        "tools": [_tool("read_file")],
+        "cache_stable_prefix": True,
+    }
+
+    first_request = ProviderRequest(
+        **common_fields,
+        messages=[_user_message("Read src/agent/main.py")],
+    )
+    second_request = ProviderRequest(
+        **common_fields,
+        messages=[
+            _user_message(
+                "Tool result: file contents\n"
+                "Now explain the failing test."
+            )
+        ],
+    )
+
+    assert first_request.cache_plan is not None
+    assert second_request.cache_plan is not None
+    assert first_request.cache_plan.stable_fingerprint == (
+        second_request.cache_plan.stable_fingerprint
+    )
+
+
+def test_changing_tool_registration_order_changes_the_fingerprint():
+    common_fields = {
+        "model": "claude-sonnet-5",
+        "max_tokens": 1_024,
+        "system": "You are a coding agent.",
+        "messages": [_user_message("Inspect the project.")],
+        "cache_stable_prefix": True,
+    }
+
+    first_request = ProviderRequest(
+        **common_fields,
+        tools=[_tool("read_file"), _tool("grep")],
+    )
+    second_request = ProviderRequest(
+        **common_fields,
+        tools=[_tool("grep"), _tool("read_file")],
+    )
+
+    assert first_request.cache_plan is not None
+    assert second_request.cache_plan is not None
+    assert first_request.cache_plan.stable_fingerprint != (
+        second_request.cache_plan.stable_fingerprint
+    )
+
+
+def test_enabled_caching_requires_some_stable_content():
+    request = ProviderRequest(
+        model="claude-sonnet-5",
+        max_tokens=1_024,
+        messages=[_user_message("Hello")],
+        cache_stable_prefix=True,
+    )
+
+    with pytest.raises(
+        PromptCachePlanError,
+        match="needs at least one cacheable section",
+    ):
+        _ = request.cache_plan

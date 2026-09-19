@@ -15,8 +15,10 @@ from agent import config, logs
 from agent.auth.credentials import ApiKey
 from agent.auth.resolver import CredentialError, resolve
 from agent.auth.store import FileStore, StoreError
+from agent.core.costs import calculate_known_model_cost
 from agent.core.loop import AgentLoop
-from agent.events import AssistantEnd, ErrorEvent, Event, SessionStarted, TextDelta, ThinkingDelta, ToolCallStart, UserMessage
+from agent.core.telemetry import SessionTelemetry
+from agent.events import AssistantEnd, ErrorEvent, Event, SessionStarted, TextDelta, ThinkingDelta, ToolCallStart, Usage, UserMessage
 from agent.providers.anthropic_raw import AnthropicRawProvider
 from agent.providers.base import EventFactory, Message, ProviderRequest, TextPart
 from agent.server.jsonrpc import JsonRpcServer
@@ -50,6 +52,63 @@ def _cost(model: str, usage) -> float | None:
 DIM, RESET = "\033[2m", "\033[0m"
 
 
+def _print_turn_telemetry(model: str, usage: Usage) -> None:
+    total_input_tokens = (
+        usage.input_tokens
+        + usage.cache_read_input_tokens
+        + usage.cache_creation_input_tokens
+    )
+
+    print(
+        f"tokens  input={total_input_tokens} "
+        f"output={usage.output_tokens} "
+        f"cache_read={usage.cache_read_input_tokens} "
+        f"cache_write={usage.cache_creation_input_tokens}"
+    )
+
+    cost = calculate_known_model_cost(model, usage)
+
+    if cost is None:
+        print("cost    unavailable: unknown model pricing")
+        return
+
+    print(f"cost    ${cost.total_usd:.5f}")
+
+
+def _log_live_telemetry(telemetry: SessionTelemetry) -> None:
+    """Write Phase 5 telemetry to stderr-safe structured logs."""
+    if not telemetry.turns:
+        return
+
+    turn = telemetry.turns[-1]
+
+    logs.get("telemetry").info(
+        "LLM turn complete",
+        extra={
+            "turn": turn.turn_number,
+            "model": turn.model,
+            "input_tokens": turn.usage.input_tokens,
+            "output_tokens": turn.usage.output_tokens,
+            "cache_read_tokens": turn.usage.cache_read_input_tokens,
+            "cache_creation_tokens": (
+                turn.usage.cache_creation_input_tokens
+            ),
+            "turn_cost_usd": (
+                str(turn.cost.total_usd)
+                if turn.cost is not None
+                else None
+            ),
+            "session_cost_usd": (
+                str(telemetry.total_cost_usd)
+                if telemetry.total_cost_usd is not None
+                else None
+            ),
+            "cache_hit_rate": str(telemetry.cache_hit_rate),
+            "cache_prefix_changed": telemetry.cache_prefix_changed,
+        },
+    )
+
+
 async def _headless_run(
     prompt: str,
     credential,
@@ -74,6 +133,7 @@ async def _headless_run(
         max_tokens=settings["max_tokens"],
         effort=settings["effort"],
         messages=[],
+        cache_stable_prefix=True
     )
 
     loop = AgentLoop(
@@ -99,6 +159,8 @@ async def _headless_run(
             [session_started, user_message],
             emit,
         ):
+            if isinstance(event, AssistantEnd):
+                _log_live_telemetry(loop.telemetry)
             yield event
 
     finally:
@@ -143,16 +205,10 @@ async def _run(prompt: str, credential, settings: dict) -> int:
                 return 1
 
             elif isinstance(event, AssistantEnd):
-                u = event.usage
-                print(f"\n\n{DIM}stop: {event.stop_reason}")
-                print(
-                    f"tokens  in={u.input_tokens} out={u.output_tokens} "
-                    f"cache_read={u.cache_read_input_tokens} "
-                    f"cache_write={u.cache_creation_input_tokens}"
-                )
-                if (c := _cost(settings["model"], u)) is not None:
-                    print(f"cost    ${c:.5f}")
-                print(RESET, end="")
+               print(f"\n\n{DIM}stop: {event.stop_reason}")
+               _print_turn_telemetry(settings["model"], event.usage)
+               print(RESET, end="")
+               
         return 0
     finally:
         await provider.aclose()
