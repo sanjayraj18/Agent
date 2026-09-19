@@ -20,7 +20,15 @@ from agent.events import AssistantEnd, ErrorEvent, Event, SessionStarted, TextDe
 from agent.providers.anthropic_raw import AnthropicRawProvider
 from agent.providers.base import EventFactory, Message, ProviderRequest, TextPart
 from agent.server.jsonrpc import JsonRpcServer
+from agent.tools.bash import BashTool
+from agent.tools.edit_file import EditFileTool
+from agent.tools.glob import GlobTool
+from agent.tools.grep import GrepTool
+from agent.tools.processes import ProcessRegistry
 from agent.tools.registry import ToolRegistry
+from agent.tools.read_file import ReadFileTool
+from agent.tools.workspace import Workspace
+from agent.tools.write_file import WriteFileTool
 
 PRICING = {
     "claude-opus-5": (5.00, 25.00),
@@ -51,9 +59,12 @@ async def _headless_run(
     provider = AnthropicRawProvider(credential)
     emit = EventFactory(session_id=uuid4().hex[:12])
 
+    workspace = Workspace(Path.cwd())
+    processes = ProcessRegistry()
+
     session_started = emit(
         SessionStarted,
-        cwd=str(Path.cwd()),
+        cwd=str(workspace.root),
         model=settings["model"],
     )
     user_message = emit(UserMessage, text=prompt)
@@ -68,7 +79,16 @@ async def _headless_run(
     loop = AgentLoop(
         provider=provider,
         request_template=request_template,
-        registry=ToolRegistry(),
+        registry=ToolRegistry(
+            [
+                ReadFileTool(workspace),
+                GlobTool(workspace),
+                GrepTool(workspace),
+                WriteFileTool(workspace),
+                EditFileTool(workspace),
+                BashTool(workspace, registry=processes),
+            ]
+        ),
     )
 
     try:
@@ -82,6 +102,7 @@ async def _headless_run(
             yield event
 
     finally:
+        await processes.close()
         await provider.aclose()
 
 
