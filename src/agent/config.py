@@ -14,6 +14,12 @@ _PERMISSION_MODES = {
     "full",
 }
 
+_SANDBOX_MODES = {
+    "enforced",
+    "disabled",
+    "container",
+}
+
 
 DEFAULTS: dict[str, Any] = {
     "model": "claude-opus-5",
@@ -21,6 +27,8 @@ DEFAULTS: dict[str, Any] = {
     "max_tokens": 16_000,
     "permission_mode": "ask",
     "tool_permission_modes": {},
+    "sandbox_mode": "enforced",
+    "sandbox_network_allowed": False,
     "log_level": "info",
 }
 
@@ -32,6 +40,10 @@ ENV_MAP: dict[str, str] = {
     "AGENT_PERMISSION_MODE": "permission_mode",
     "AGENT_TOOL_PERMISSION_MODES": "tool_permission_modes",
     "AGENT_LOG_LEVEL": "log_level",
+    "AGENT_SANDBOX_MODE": "sandbox_mode",
+    "AGENT_SANDBOX_NETWORK_ALLOWED": (
+        "sandbox_network_allowed"
+    ),
 }
 
 
@@ -164,6 +176,7 @@ def load(
         )
 
     _validate_permission_settings(resolved)
+    _validate_sandbox_settings(resolved)
 
     return resolved
 
@@ -204,6 +217,26 @@ def render(resolved: Mapping[str, Resolved]) -> str:
     return "\n".join(lines)
 
 
+def _validate_sandbox_settings( resolved: Mapping[str, Resolved]) -> None:
+    mode = resolved["sandbox_mode"].value
+
+    if not isinstance(mode, str) or mode not in _SANDBOX_MODES:
+        choices = ", ".join(sorted(_SANDBOX_MODES))
+        raise ConfigError(
+            "sandbox_mode must be one of: "
+            f"{choices}; got {mode!r}"
+        )
+
+    network_allowed = resolved[
+        "sandbox_network_allowed"
+    ].value
+
+    if not isinstance(network_allowed, bool):
+        raise ConfigError(
+            "sandbox_network_allowed must be a boolean"
+        )
+
+    
 def _validate_permission_settings(
     resolved: Mapping[str, Resolved],
 ) -> None:

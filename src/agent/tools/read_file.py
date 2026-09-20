@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent.security import SecretScanner
 from agent.tools.base import Tool, ToolExecutionResult
 from agent.tools.workspace import Workspace, WorkspacePathError
 
@@ -14,6 +15,7 @@ class ReadFileTool(Tool):
         "Read a UTF-8 text file from the workspace. "
         "Use start_line and end_line to read a specific line range. "
         "The result includes line numbers. "
+        "Potential secrets are redacted before content is returned. "
         "This tool cannot read files outside the workspace."
     )
     input_schema = {
@@ -43,6 +45,7 @@ class ReadFileTool(Tool):
         workspace: Workspace,
         max_bytes: int = 100_000,
         max_lines: int = 2_000,
+        secret_scanner: SecretScanner | None = None,
     ) -> None:
         if max_bytes < 1:
             raise ValueError("max_bytes must be at least 1")
@@ -53,6 +56,7 @@ class ReadFileTool(Tool):
         self._workspace = workspace
         self._max_bytes = max_bytes
         self._max_lines = max_lines
+        self._secret_scanner = secret_scanner or SecretScanner()
 
     async def execute(
         self,
@@ -88,7 +92,10 @@ class ReadFileTool(Tool):
         end_line: int | None = None
 
         if end_value is not None:
-            parsed_end_line = self._line_number(end_value, "end_line")
+            parsed_end_line = self._line_number(
+                end_value,
+                "end_line",
+            )
             if isinstance(parsed_end_line, ToolExecutionResult):
                 return parsed_end_line
             end_line = parsed_end_line
@@ -124,7 +131,6 @@ class ReadFileTool(Tool):
 
             with path.open("rb") as file:
                 raw = file.read(self._max_bytes)
-
         except OSError as exc:
             return ToolExecutionResult(
                 content=f"could not read file: {exc}",
@@ -156,7 +162,9 @@ class ReadFileTool(Tool):
                 is_error=True,
             )
 
-        requested_end = end_line or (start_line + self._max_lines - 1)
+        requested_end = end_line or (
+            start_line + self._max_lines - 1
+        )
         limited_end = min(
             requested_end,
             start_line + self._max_lines - 1,
@@ -164,16 +172,34 @@ class ReadFileTool(Tool):
         )
 
         selected_lines = lines[start_line - 1 : limited_end]
+        selected_text = "\n".join(selected_lines)
+        scan = self._secret_scanner.scan(selected_text)
+
+        safe_lines = (
+            scan.redacted_text.split("\n")
+            if selected_lines
+            else []
+        )
 
         rendered_lines = [
             f"{line_number:>6}: {line}"
             for line_number, line in enumerate(
-                selected_lines,
+                safe_lines,
                 start=start_line,
             )
         ]
 
         notes: list[str] = []
+
+        if scan.was_redacted:
+            noun = (
+                "secret"
+                if scan.redaction_count == 1
+                else "secrets"
+            )
+            notes.append(
+                f"{scan.redaction_count} potential {noun} redacted"
+            )
 
         if limited_end < len(lines) and (
             end_line is None or end_line > limited_end

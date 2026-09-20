@@ -3,6 +3,12 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from agent.security import SecretScanner
+from agent.sandbox.base import (
+    SandboxBackend,
+    SandboxCommand,
+    SandboxError,
+)
 from agent.tools.base import Tool, ToolExecutionResult
 from agent.tools.processes import (
     ProcessRegistry,
@@ -18,17 +24,26 @@ class BashTool(Tool):
     name = "bash"
     description = (
         "Run a shell command with the workspace as its working directory. "
-        "Use action='run' to execute a command, optionally with background=true. "
-        "Use action='status' or action='stop' with a job_id to inspect or stop "
-        "a background command. Foreground commands have a timeout and bounded output."
+        "Commands use the configured sandbox when one is supplied. "
+        "Use action='run' to execute a command, optionally with "
+        "background=true. Use action='status' or action='stop' with a "
+        "job_id to inspect or stop a background command. Foreground "
+        "commands have a timeout and bounded output."
     )
     input_schema = {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["run", "status", "stop"]},
+            "action": {
+                "type": "string",
+                "enum": ["run", "status", "stop"],
+            },
             "command": {"type": "string"},
             "background": {"type": "boolean"},
-            "timeout_seconds": {"type": "number", "minimum": 0.1, "maximum": 600},
+            "timeout_seconds": {
+                "type": "number",
+                "minimum": 0.1,
+                "maximum": 600,
+            },
             "job_id": {"type": "string"},
         },
         "additionalProperties": False,
@@ -38,19 +53,32 @@ class BashTool(Tool):
         self,
         workspace: Workspace,
         registry: ProcessRegistry | None = None,
+        sandbox: SandboxBackend | None = None,
+        secret_scanner: SecretScanner | None = None,
         max_output_bytes: int = 100_000,
         max_timeout_seconds: float = 600,
     ) -> None:
         if max_output_bytes < 1:
             raise ValueError("max_output_bytes must be at least 1")
+
         if max_timeout_seconds <= 0:
-            raise ValueError("max_timeout_seconds must be greater than zero")
+            raise ValueError(
+                "max_timeout_seconds must be greater than zero"
+            )
+
         self._workspace = workspace
-        self._registry = registry or ProcessRegistry(max_output_bytes)
+        self._registry = registry or ProcessRegistry(
+            max_output_bytes
+        )
+        self._sandbox = sandbox
+        self._secret_scanner = secret_scanner or SecretScanner()
         self._max_output_bytes = max_output_bytes
         self._max_timeout_seconds = max_timeout_seconds
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolExecutionResult:
+    async def execute(
+        self,
+        arguments: dict[str, Any],
+    ) -> ToolExecutionResult:
         unexpected = set(arguments) - {
             "action",
             "command",
@@ -60,7 +88,10 @@ class BashTool(Tool):
         }
         if unexpected:
             return ToolExecutionResult(
-                content=f"unexpected arguments: {', '.join(sorted(unexpected))}",
+                content=(
+                    "unexpected arguments: "
+                    f"{', '.join(sorted(unexpected))}"
+                ),
                 is_error=True,
             )
 
@@ -73,15 +104,20 @@ class BashTool(Tool):
 
         if action == "run":
             return await self._run(arguments)
+
         return await self._manage(action, arguments)
 
-    async def _run(self, arguments: dict[str, Any]) -> ToolExecutionResult:
+    async def _run(
+        self,
+        arguments: dict[str, Any],
+    ) -> ToolExecutionResult:
         command = arguments.get("command")
         if not isinstance(command, str) or not command.strip():
             return ToolExecutionResult(
                 content="command must be a non-empty string",
                 is_error=True,
             )
+
         if "\x00" in command:
             return ToolExecutionResult(
                 content="command must not contain a null byte",
@@ -95,16 +131,18 @@ class BashTool(Tool):
                 is_error=True,
             )
 
-        timeout = self._timeout(arguments.get("timeout_seconds", 30.0))
+        timeout = self._timeout(
+            arguments.get("timeout_seconds", 30.0)
+        )
         if isinstance(timeout, ToolExecutionResult):
             return timeout
 
         try:
-            process = await asyncio.create_subprocess_shell(
-                command,
-                cwd=str(self._workspace.root),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
+            process = await self._start_process(command)
+        except SandboxError as exc:
+            return ToolExecutionResult(
+                content=f"sandbox could not start command: {exc}",
+                is_error=True,
             )
         except OSError as exc:
             return ToolExecutionResult(
@@ -113,36 +151,77 @@ class BashTool(Tool):
             )
 
         if background:
-            snapshot = await self._registry.register(command, process)
+            snapshot = await self._registry.register(
+                command,
+                process,
+            )
             return ToolExecutionResult(
-                content=f"started background job {snapshot.job_id} (pid {snapshot.pid})"
+                content=(
+                    f"started background job {snapshot.job_id} "
+                    f"(pid {snapshot.pid})"
+                )
             )
 
         assert process.stdout is not None
         reader_task = asyncio.create_task(
-            read_limited_stream(process.stdout, self._max_output_bytes)
+            read_limited_stream(
+                process.stdout,
+                self._max_output_bytes,
+            )
         )
+
         timed_out = False
+
         try:
-            await asyncio.wait_for(process.wait(), timeout=timeout)
+            await asyncio.wait_for(
+                process.wait(),
+                timeout=timeout,
+            )
         except TimeoutError:
             timed_out = True
             process.kill()
             await process.wait()
+
         output, truncated = await reader_task
         rendered = self._render_output(output, truncated)
 
         if timed_out:
             return ToolExecutionResult(
-                content=f"command timed out after {timeout:g} seconds\n{rendered}",
+                content=(
+                    f"command timed out after {timeout:g} seconds\n"
+                    f"{rendered}"
+                ),
                 is_error=True,
             )
+
         if process.returncode != 0:
             return ToolExecutionResult(
-                content=f"command exited with status {process.returncode}\n{rendered}",
+                content=(
+                    f"command exited with status "
+                    f"{process.returncode}\n{rendered}"
+                ),
                 is_error=True,
             )
+
         return ToolExecutionResult(content=rendered)
+
+    async def _start_process(
+        self,
+        command: str,
+    ) -> asyncio.subprocess.Process:
+        if self._sandbox is None:
+            return await asyncio.create_subprocess_shell(
+                command,
+                cwd=str(self._workspace.root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+
+        sandbox_command = SandboxCommand(
+            command=command,
+            working_directory=self._workspace.root,
+        )
+        return await self._sandbox.start(sandbox_command)
 
     async def _manage(
         self,
@@ -166,39 +245,80 @@ class BashTool(Tool):
                 content=f"unknown background job: {job_id}",
                 is_error=True,
             )
-        return ToolExecutionResult(content=self._render_snapshot(snapshot))
 
-    def _timeout(self, value: object) -> float | ToolExecutionResult:
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return ToolExecutionResult(
+            content=self._render_snapshot(snapshot)
+        )
+
+    def _timeout(
+        self,
+        value: object,
+    ) -> float | ToolExecutionResult:
+        if not isinstance(value, (int, float)) or isinstance(
+            value,
+            bool,
+        ):
             return ToolExecutionResult(
                 content="timeout_seconds must be a number",
                 is_error=True,
             )
+
         timeout = float(value)
+
         if timeout <= 0 or timeout > self._max_timeout_seconds:
             return ToolExecutionResult(
-                content=f"timeout_seconds must be between 0 and "
-                f"{self._max_timeout_seconds:g}",
+                content=(
+                    "timeout_seconds must be between 0 and "
+                    f"{self._max_timeout_seconds:g}"
+                ),
                 is_error=True,
             )
+
         return timeout
 
-    @staticmethod
-    def _render_output(output: bytes, truncated: bool) -> str:
-        text = output.decode("utf-8", errors="replace").rstrip("\n")
+    def _render_output(
+        self,
+        output: bytes,
+        truncated: bool,
+    ) -> str:
+        text = output.decode(
+            "utf-8",
+            errors="replace",
+        ).rstrip("\n")
+
+        scan = self._secret_scanner.scan(text)
+        text = scan.redacted_text
+
         if not text:
             text = "[no output]"
+
+        if scan.was_redacted:
+            noun = (
+                "secret"
+                if scan.redaction_count == 1
+                else "secrets"
+            )
+            text += (
+                f"\n[{scan.redaction_count} potential "
+                f"{noun} redacted]"
+            )
+
         if truncated:
             text += "\n[output truncated]"
+
         return text
 
-    @classmethod
-    def _render_snapshot(cls, snapshot: ProcessSnapshot) -> str:
+    def _render_snapshot(
+        self,
+        snapshot: ProcessSnapshot,
+    ) -> str:
         details = (
             f"job {snapshot.job_id}: {snapshot.status} "
             f"(pid {snapshot.pid}, exit={snapshot.return_code})"
         )
-        return (
-            f"{details}\n"
-            f"{cls._render_output(snapshot.output.encode(), snapshot.output_truncated)}"
+        output = self._render_output(
+            snapshot.output.encode(),
+            snapshot.output_truncated,
         )
+
+        return f"{details}\n{output}"

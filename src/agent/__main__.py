@@ -2,7 +2,9 @@ from  __future__ import annotations
 
 import argparse
 import asyncio
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import AsyncIterator
 from uuid import uuid4
@@ -23,6 +25,15 @@ from agent.core.telemetry import SessionTelemetry
 from agent.events import AssistantEnd, ErrorEvent, Event, SessionStarted,ContextCompacted, TextDelta, ThinkingDelta, ToolCallStart, Usage, UserMessage
 from agent.providers.anthropic_raw import AnthropicRawProvider
 from agent.providers.base import EventFactory, Message, ProviderRequest, TextPart
+from agent.sandbox import (
+    SandboxBackend,
+    SandboxMode,
+    SandboxPolicy,
+    SandboxPolicyError,
+    SandboxUnavailableError,
+)
+from agent.sandbox.runtime import create_sandbox
+from agent.security import SecretScanner
 from agent.server.jsonrpc import JsonRpcServer
 from agent.tools.bash import BashTool
 from agent.tools.edit_file import EditFileTool
@@ -127,6 +138,80 @@ def _log_live_telemetry(telemetry: SessionTelemetry) -> None:
     )
 
 
+def _sandbox_runtime_read_paths() -> tuple[Path, ...]:
+    """Return the minimal command runtimes needed inside the sandbox."""
+
+    paths: list[Path] = []
+
+    def include(path: Path) -> None:
+        resolved = path.expanduser().resolve()
+
+        if resolved.exists() and resolved not in paths:
+            paths.append(resolved)
+
+    python = Path(sys.executable).resolve()
+    include(python.parent.parent)
+
+    for command_name in (
+        "uv",
+        "python",
+        "python3",
+        "pytest",
+        "git",
+        "rg",
+    ):
+        location = shutil.which(command_name)
+
+        if location is not None:
+            include(Path(location))
+
+    uv_runtime = Path.home() / ".local" / "share" / "uv"
+    if uv_runtime.exists():
+        include(uv_runtime)
+
+    return tuple(paths)
+
+
+def _create_workspace_sandbox(
+    workspace: Workspace,
+    settings: dict,
+) -> tuple[
+    SandboxBackend,
+    tempfile.TemporaryDirectory[str],
+]:
+    """Create one enforced sandbox and private temporary directory."""
+
+    temporary_directory = tempfile.TemporaryDirectory(
+        prefix=".agent-sandbox-",
+        dir=workspace.root,
+    )
+
+    try:
+        mode_value = settings["sandbox_mode"]
+        network_value = settings["sandbox_network_allowed"]
+
+        if not isinstance(mode_value, str):
+            raise ValueError("sandbox_mode must be a string")
+
+        if not isinstance(network_value, bool):
+            raise ValueError(
+                "sandbox_network_allowed must be a boolean"
+            )
+
+        policy = SandboxPolicy(
+            workspace_root=workspace.root,
+            network_allowed=network_value,
+            temporary_directory=Path(temporary_directory.name),
+            runtime_read_paths=_sandbox_runtime_read_paths(),
+            mode=SandboxMode(mode_value),
+        )
+
+        return create_sandbox(policy), temporary_directory
+    except Exception:
+        temporary_directory.cleanup()
+        raise
+
+
 async def _headless_run(
     prompt: str,
     credential,
@@ -137,6 +222,7 @@ async def _headless_run(
 
     workspace = Workspace(Path.cwd())
     processes = ProcessRegistry()
+    sandbox_temporary_directory = None
 
     session_started = emit(
         SessionStarted,
@@ -175,6 +261,42 @@ async def _headless_run(
             },
         )
 
+        try:
+            sandbox, sandbox_temporary_directory = (
+                _create_workspace_sandbox(
+                    workspace,
+                    settings,
+                )
+            )
+        except (
+            SandboxPolicyError,
+            SandboxUnavailableError,
+            OSError,
+            ValueError,
+        ) as exc:
+            yield session_started
+            yield user_message
+            yield emit(
+                ErrorEvent,
+                kind="sandbox_configuration_error",
+                message=str(exc),
+                retryable=False,
+            )
+            return
+
+        logs.get("sandbox").info(
+            "sandbox enabled",
+            extra={
+                "backend": sandbox.name,
+                "mode": settings["sandbox_mode"],
+                "network_allowed": settings[
+                    "sandbox_network_allowed"
+                ],
+            },
+        )
+
+        secret_scanner = SecretScanner()
+
         request_template = ProviderRequest(
             model=settings["model"],
             max_tokens=settings["max_tokens"],
@@ -188,12 +310,20 @@ async def _headless_run(
             request_template=request_template,
             registry=ToolRegistry(
                 [
-                    ReadFileTool(workspace),
+                    ReadFileTool(
+                        workspace,
+                        secret_scanner=secret_scanner,
+                    ),
                     GlobTool(workspace),
                     GrepTool(workspace),
                     WriteFileTool(workspace),
                     EditFileTool(workspace),
-                    BashTool(workspace, registry=processes),
+                    BashTool(
+                        workspace,
+                        registry=processes,
+                        sandbox=sandbox,
+                        secret_scanner=secret_scanner,
+                    ),
                 ]
             ),
             permissions=permissions,
@@ -216,6 +346,8 @@ async def _headless_run(
 
     finally:
         await processes.close()
+        if sandbox_temporary_directory is not None:
+            sandbox_temporary_directory.cleanup()
         await provider.aclose()
         
 
@@ -275,12 +407,26 @@ def main() -> None:
         "auto",
         "full",
     ]
+    sandbox_modes = [
+        "enforced",
+        "disabled",
+        "container",
+    ]
 
     sub.add_parser("config", help="show resolved settings and where they came from")
     serve = sub.add_parser("serve", help="run the headless JSON-RPC server over stdin/stdout",)
     serve.add_argument( "--permission-mode",dest="permission_mode",choices=permission_modes)
     serve.add_argument("--model")
     serve.add_argument("--effort",choices=["low", "medium", "high", "xhigh", "max"])
+    serve.add_argument(
+        "--sandbox-mode",
+        choices=sandbox_modes,
+    )
+    serve.add_argument(
+        "--sandbox-network-allowed",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     serve.add_argument("--api-key", dest="api_key")
 
     auth = sub.add_parser("auth", help="credential commands")
@@ -294,6 +440,15 @@ def main() -> None:
     run.add_argument("--model")
     run.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"])
     run.add_argument( "--permission-mode", dest="permission_mode", choices=permission_modes,)
+    run.add_argument(
+        "--sandbox-mode",
+        choices=sandbox_modes,
+    )
+    run.add_argument(
+        "--sandbox-network-allowed",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     run.add_argument("--api-key", dest="api_key")
 
     args = parser.parse_args()
@@ -305,6 +460,16 @@ def main() -> None:
                 "model": getattr(args, "model", None),
                 "effort": getattr(args, "effort", None),
                 "permission_mode": getattr(args, "permission_mode", None),
+                "sandbox_mode": getattr(
+                    args,
+                    "sandbox_mode",
+                    None,
+                ),
+                "sandbox_network_allowed": getattr(
+                    args,
+                    "sandbox_network_allowed",
+                    None,
+                ),
             },
         )
     except config.ConfigError as exc:
