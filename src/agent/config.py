@@ -29,6 +29,10 @@ DEFAULTS: dict[str, Any] = {
     "tool_permission_modes": {},
     "sandbox_mode": "enforced",
     "sandbox_network_allowed": False,
+    # Kept relative to the workspace by default. This makes a project’s
+    # durable conversations easy to back up, while an organization can point
+    # it at a managed location with AGENT_SESSION_DATABASE_PATH.
+    "session_database_path": ".agent/sessions.sqlite3",
     "log_level": "info",
 }
 
@@ -44,6 +48,7 @@ ENV_MAP: dict[str, str] = {
     "AGENT_SANDBOX_NETWORK_ALLOWED": (
         "sandbox_network_allowed"
     ),
+    "AGENT_SESSION_DATABASE_PATH": "session_database_path",
 }
 
 

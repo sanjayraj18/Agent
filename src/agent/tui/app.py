@@ -49,6 +49,24 @@ class AgentTuiApp(App[None]):
             "View latest diff",
             show=True,
         ),
+        Binding(
+            "ctrl+n",
+            "new_session",
+            "New session",
+            show=True,
+        ),
+        Binding(
+            "ctrl+r",
+            "resume_recent_session",
+            "Resume latest",
+            show=True,
+        ),
+        Binding(
+            "ctrl+f",
+            "fork_session",
+            "Fork session",
+            show=True,
+        ),
     ]
 
     CSS = """
@@ -83,6 +101,7 @@ class AgentTuiApp(App[None]):
         self._client = client or AgentRpcClient()
         self._state = TuiState()
         self._show_thinking = False
+        self._session_id: str | None = None
 
     @property
     def state(self) -> TuiState:
@@ -137,7 +156,60 @@ class AgentTuiApp(App[None]):
             return
 
         self._state.reset()
+        self._session_id = None
         self._render_state()
+
+    def action_new_session(self) -> None:
+        """Start a new durable conversation; prior history stays archived."""
+
+        if self._state.status == RunStatus.RUNNING:
+            self.notify(
+                "Wait for the active run before starting a new session.",
+                severity="warning",
+            )
+            return
+
+        self._session_id = None
+        self._state.reset()
+        self._render_state()
+        self.notify("A new durable session will start with your next prompt.")
+
+    def action_resume_recent_session(self) -> None:
+        """Restore the most recently updated session into this TUI."""
+
+        if self._state.status == RunStatus.RUNNING:
+            self.notify(
+                "Wait for the active run before switching sessions.",
+                severity="warning",
+            )
+            return
+
+        self.run_worker(
+            self._resume_recent_session(),
+            exclusive=True,
+            group="session-control",
+            description="Resume latest session",
+        )
+
+    def action_fork_session(self) -> None:
+        """Branch the current history so experimentation never rewrites it."""
+
+        if self._state.status == RunStatus.RUNNING:
+            self.notify(
+                "Wait for the active run before forking the session.",
+                severity="warning",
+            )
+            return
+        if self._session_id is None:
+            self.notify("There is no durable session to fork yet.")
+            return
+
+        self.run_worker(
+            self._fork_current_session(),
+            exclusive=True,
+            group="session-control",
+            description="Fork session",
+        )
 
     def action_toggle_thinking(self) -> None:
         self._show_thinking = not self._show_thinking
@@ -184,7 +256,14 @@ class AgentTuiApp(App[None]):
         self._render_state()
 
         try:
-            async for item in self._client.run(prompt):
+            if self._session_id is None:
+                session = await self._client.create_session()
+                self._session_id = session.session_id
+
+            async for item in self._client.run(
+                prompt,
+                session_id=self._session_id,
+            ):
                 if isinstance(item, PermissionApprovalRequested):
                     await self._handle_approval(item)
                     continue
@@ -210,6 +289,53 @@ class AgentTuiApp(App[None]):
                 "Agent connection failed. Check the terminal diagnostics.",
                 severity="error",
             )
+
+    async def _resume_recent_session(self) -> None:
+        try:
+            sessions = await self._client.list_sessions()
+            if not sessions:
+                self.notify("There are no saved sessions yet.")
+                return
+
+            session = sessions[0]
+            events = await self._client.replay_session(session.session_id)
+
+            self._state.reset()
+            self._state.session_id = session.session_id
+            self._state.workspace = session.workspace
+            self._state.model = session.model
+            for event in events:
+                self._state.apply(event)
+
+            self._session_id = session.session_id
+            self._render_state()
+            self.notify(
+                f"Resumed {session.title or session.session_id[:8]}."
+            )
+        except RpcClientError as exc:
+            self.notify(f"Could not resume session: {exc}", severity="error")
+
+    async def _fork_current_session(self) -> None:
+        assert self._session_id is not None
+
+        try:
+            session = await self._client.fork_session(self._session_id)
+            events = await self._client.replay_session(session.session_id)
+
+            self._state.reset()
+            self._state.session_id = session.session_id
+            self._state.workspace = session.workspace
+            self._state.model = session.model
+            for event in events:
+                self._state.apply(event)
+
+            self._session_id = session.session_id
+            self._render_state()
+            self.notify(
+                f"Forked into {session.title or session.session_id[:8]}."
+            )
+        except RpcClientError as exc:
+            self.notify(f"Could not fork session: {exc}", severity="error")
 
     async def _handle_approval(
         self,

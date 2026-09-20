@@ -5,6 +5,7 @@ import asyncio
 import shutil
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import AsyncIterator
 from uuid import uuid4
@@ -25,6 +26,11 @@ from agent.core.telemetry import SessionTelemetry
 from agent.events import AssistantEnd, ErrorEvent, Event, SessionStarted,ContextCompacted, TextDelta, ThinkingDelta, ToolCallStart, Usage, UserMessage
 from agent.providers.anthropic_raw import AnthropicRawProvider
 from agent.providers.base import EventFactory, Message, ProviderRequest, TextPart
+from agent.persistence.database import SqliteDatabase
+from agent.persistence.event_log import EventLog
+from agent.persistence.migrations import migrate
+from agent.persistence.models import SessionRecord
+from agent.persistence.sessions import SessionStore
 from agent.sandbox import (
     SandboxBackend,
     SandboxMode,
@@ -35,6 +41,9 @@ from agent.sandbox import (
 from agent.sandbox.runtime import create_sandbox
 from agent.security import SecretScanner
 from agent.server.jsonrpc import JsonRpcServer
+from agent.server.session_runtime import AgentRunner
+from agent.server.session_service import SessionService
+from agent.server.unix_socket import UnixSocketServer
 from agent.tools.bash import BashTool
 from agent.tools.dispatcher import ApprovalHandler
 from agent.tools.edit_file import EditFileTool
@@ -352,7 +361,155 @@ async def _headless_run(
         if sandbox_temporary_directory is not None:
             sandbox_temporary_directory.cleanup()
         await provider.aclose()
-        
+
+
+def _persistent_runner_factory(
+    credential,
+    settings: dict,
+) -> Callable[[SessionRecord, ApprovalHandler | None], AgentRunner]:
+    """Build AgentLoop runners that continue a durable event history.
+
+    ``SessionRuntime`` creates and persists ``session.started`` and the new
+    user message. This adapter owns only the ephemeral resources needed while
+    AgentLoop turns that already-durable history into more events.
+    """
+
+    def build_runner(
+        session: SessionRecord,
+        approval_handler: ApprovalHandler | None,
+    ) -> AgentRunner:
+        async def run(
+            history: tuple[Event, ...],
+            emit: EventFactory,
+        ) -> AsyncIterator[Event]:
+            provider = AnthropicRawProvider(credential)
+            processes = ProcessRegistry()
+            sandbox_temporary_directory = None
+
+            try:
+                workspace = Workspace(Path(session.workspace))
+
+                try:
+                    grants = ProjectGrantStore.load(workspace.root)
+                    permissions = PermissionPolicy(
+                        default_mode=settings["permission_mode"],
+                        tool_modes=settings["tool_permission_modes"],
+                        grants=grants,
+                    )
+                except (GrantStoreError, ValueError) as exc:
+                    yield emit(
+                        ErrorEvent,
+                        kind="permission_configuration_error",
+                        message=str(exc),
+                        retryable=False,
+                    )
+                    return
+
+                try:
+                    sandbox, sandbox_temporary_directory = (
+                        _create_workspace_sandbox(workspace, settings)
+                    )
+                except (
+                    SandboxPolicyError,
+                    SandboxUnavailableError,
+                    OSError,
+                    ValueError,
+                ) as exc:
+                    yield emit(
+                        ErrorEvent,
+                        kind="sandbox_configuration_error",
+                        message=str(exc),
+                        retryable=False,
+                    )
+                    return
+
+                secret_scanner = SecretScanner()
+                request_template = ProviderRequest(
+                    model=session.model,
+                    max_tokens=settings["max_tokens"],
+                    effort=settings["effort"],
+                    messages=[],
+                    cache_stable_prefix=True,
+                )
+                loop = AgentLoop(
+                    provider=provider,
+                    request_template=request_template,
+                    registry=ToolRegistry(
+                        [
+                            ReadFileTool(
+                                workspace,
+                                secret_scanner=secret_scanner,
+                            ),
+                            GlobTool(workspace),
+                            GrepTool(workspace),
+                            WriteFileTool(workspace),
+                            EditFileTool(workspace),
+                            BashTool(
+                                workspace,
+                                registry=processes,
+                                sandbox=sandbox,
+                                secret_scanner=secret_scanner,
+                            ),
+                        ]
+                    ),
+                    permissions=permissions,
+                    approval_handler=approval_handler,
+                )
+
+                async for event in loop.run(history, emit):
+                    if isinstance(event, AssistantEnd):
+                        _log_live_telemetry(loop.telemetry)
+                    elif isinstance(event, ContextCompacted):
+                        _log_context_compaction(event)
+                    yield event
+
+            finally:
+                await processes.close()
+                if sandbox_temporary_directory is not None:
+                    sandbox_temporary_directory.cleanup()
+                await provider.aclose()
+
+        return run
+
+    return build_runner
+
+
+def _session_database_path(settings: dict) -> Path:
+    value = settings["session_database_path"]
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            "session_database_path must be a non-empty string"
+        )
+
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path
+
+
+def _create_session_service(
+    credential,
+    settings: dict,
+) -> SessionService:
+    """Open, migrate, and wire the one SQLite source of truth."""
+
+    database = SqliteDatabase(_session_database_path(settings))
+    migration = migrate(database)
+    logs.get("persistence").info(
+        "session database ready",
+        extra={
+            "path": str(database.path),
+            "schema_version": migration.current_version,
+            "applied_versions": migration.applied_versions,
+        },
+    )
+
+    return SessionService(
+        sessions=SessionStore(database),
+        event_log=EventLog(database),
+        runner_factory=_persistent_runner_factory(credential, settings),
+    )
+
 
 async def _run(prompt: str, credential, settings: dict) -> int:
     provider = AnthropicRawProvider(credential)
@@ -418,7 +575,10 @@ def main() -> None:
 
     sub.add_parser("config", help="show resolved settings and where they came from")
     sub.add_parser("tui", help="start the interactive terminal interface")
-    serve = sub.add_parser("serve", help="run the headless JSON-RPC server over stdin/stdout",)
+    serve = sub.add_parser(
+        "serve",
+        help="run the durable JSON-RPC server over stdin/stdout",
+    )
     serve.add_argument( "--permission-mode",dest="permission_mode",choices=permission_modes)
     serve.add_argument("--model")
     serve.add_argument("--effort",choices=["low", "medium", "high", "xhigh", "max"])
@@ -432,6 +592,15 @@ def main() -> None:
         default=None,
     )
     serve.add_argument("--api-key", dest="api_key")
+    serve.add_argument(
+        "--session-database-path",
+        dest="session_database_path",
+    )
+    serve.add_argument(
+        "--unix-socket",
+        type=Path,
+        help="serve the same JSON-RPC protocol on a private Unix socket",
+    )
 
     auth = sub.add_parser("auth", help="credential commands")
     auth_sub = auth.add_subparsers(dest="auth_command", required=True)
@@ -472,6 +641,11 @@ def main() -> None:
                 "sandbox_network_allowed": getattr(
                     args,
                     "sandbox_network_allowed",
+                    None,
+                ),
+                "session_database_path": getattr(
+                    args,
+                    "session_database_path",
                     None,
                 ),
             },
@@ -533,29 +707,24 @@ def main() -> None:
         return
 
     if args.command == "serve":
-        def run_agent(prompt: str) -> AsyncIterator[Event]:
-            return _headless_run(
-                prompt,
-                resolved_credential.credential,
-                settings,
-            )
-
-        def run_agent_with_approval(
-            prompt: str,
-            approval_handler: ApprovalHandler,
-        ) -> AsyncIterator[Event]:
-            return _headless_run(
-                prompt,
-                resolved_credential.credential,
-                settings,
-                approval_handler,
-            )
-
-        server = JsonRpcServer(
-            run_agent,
-            run_agent_with_approval=run_agent_with_approval,
+        session_service = _create_session_service(
+            resolved_credential.credential,
+            settings,
         )
-        asyncio.run(server.serve(sys.stdin, sys.stdout))
+        server = JsonRpcServer(
+            session_service=session_service,
+            default_workspace=Path.cwd(),
+            default_model=settings["model"],
+        )
+
+        if args.unix_socket is not None:
+            socket_server = UnixSocketServer(
+                rpc=server,
+                path=args.unix_socket,
+            )
+            asyncio.run(socket_server.serve_forever())
+        else:
+            asyncio.run(server.serve(sys.stdin, sys.stdout))
         return
 
     raise SystemExit(

@@ -14,6 +14,7 @@ from agent.events import (
     EventAdapter,
     PermissionApprovalRequested,
 )
+from agent.persistence.models import SessionRecord
 
 
 AgentStreamItem = Event | PermissionApprovalRequested
@@ -44,8 +45,9 @@ class AgentRpcClient:
     """
     A TUI client for one local `agent serve` child process.
 
-    Phase 9 starts with one active request at a time. Phase 10 will
-    extend this boundary for durable sessions and multiple clients.
+    One client process can create, resume, fork, and archive durable sessions.
+    A session run is still serialized per client because stdout is one ordered
+    JSON-RPC stream; other clients may attach through the Unix socket server.
     """
 
     def __init__(
@@ -67,6 +69,7 @@ class AgentRpcClient:
         self._request_number = 0
         self._run_lock = asyncio.Lock()
         self._active_run_request_id: str | None = None
+        self.active_session_id: str | None = None
         self.last_run_status: str | None = None
 
     @property
@@ -112,8 +115,10 @@ class AgentRpcClient:
     async def run(
         self,
         prompt: str,
+        *,
+        session_id: str | None = None,
     ) -> AsyncIterator[AgentStreamItem]:
-        """Send one prompt and yield engine events plus approval requests."""
+        """Run a prompt, optionally inside a durable session."""
 
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be a non-empty string")
@@ -124,14 +129,26 @@ class AgentRpcClient:
 
             request_id = self._next_request_id()
             self._active_run_request_id = request_id
+            self.active_session_id = session_id
+
+            params: dict[str, Any] = {"prompt": prompt}
+            method = "agent.run"
+
+            if session_id is not None:
+                if not session_id.strip():
+                    raise ValueError(
+                        "session_id must be a non-empty string"
+                    )
+                method = "session.run"
+                params["session_id"] = session_id
 
             try:
                 await self._send(
                     {
                         "jsonrpc": "2.0",
                         "id": request_id,
-                        "method": "agent.run",
-                        "params": {"prompt": prompt},
+                        "method": method,
+                        "params": params,
                     }
                 )
 
@@ -186,6 +203,108 @@ class AgentRpcClient:
                     return
             finally:
                 self._active_run_request_id = None
+
+    async def create_session(
+        self,
+        *,
+        workspace: Path | None = None,
+        model: str | None = None,
+        title: str | None = None,
+    ) -> SessionRecord:
+        """Create a session using server defaults when values are omitted."""
+
+        params: dict[str, Any] = {}
+        if workspace is not None:
+            params["workspace"] = str(workspace)
+        if model is not None:
+            params["model"] = model
+        if title is not None:
+            params["title"] = title
+
+        result = await self._request("session.create", params)
+        return self._session_from_result(result)
+
+    async def list_sessions(
+        self,
+        *,
+        include_archived: bool = False,
+        limit: int = 100,
+    ) -> tuple[SessionRecord, ...]:
+        """Fetch sessions for a local picker without loading full histories."""
+
+        result = await self._request(
+            "session.list",
+            {
+                "include_archived": include_archived,
+                "limit": limit,
+            },
+        )
+        values = result.get("sessions")
+        if not isinstance(values, list):
+            raise RpcClientError("session.list returned invalid sessions")
+
+        try:
+            return tuple(SessionRecord.model_validate(value) for value in values)
+        except Exception as exc:
+            raise RpcClientError(
+                "session.list returned an invalid session"
+            ) from exc
+
+    async def replay_session(
+        self,
+        session_id: str,
+        *,
+        after_sequence: int = 0,
+    ) -> tuple[Event, ...]:
+        """Load a finite durable history before resuming a session."""
+
+        result = await self._request(
+            "session.replay",
+            {
+                "session_id": session_id,
+                "after_sequence": after_sequence,
+            },
+        )
+        values = result.get("events")
+        if not isinstance(values, list):
+            raise RpcClientError("session.replay returned invalid events")
+
+        try:
+            return tuple(EventAdapter.validate_python(value) for value in values)
+        except Exception as exc:
+            raise RpcClientError(
+                "session.replay returned an invalid event"
+            ) from exc
+
+    async def fork_session(
+        self,
+        session_id: str,
+        *,
+        at_sequence: int | None = None,
+        title: str | None = None,
+    ) -> SessionRecord:
+        """Branch a session without mutating its original history."""
+
+        params: dict[str, Any] = {"session_id": session_id}
+        if at_sequence is not None:
+            params["at_sequence"] = at_sequence
+        if title is not None:
+            params["title"] = title
+
+        result = await self._request("session.fork", params)
+        return self._session_from_result(result)
+
+    async def archive_session(
+        self,
+        session_id: str,
+    ) -> SessionRecord:
+        """Archive history from the normal picker without deleting it."""
+
+        result = await self._request(
+            "session.archive",
+            {"session_id": session_id},
+        )
+        return self._session_from_result(result)
 
     async def respond_to_approval(
         self,
@@ -256,6 +375,7 @@ class AgentRpcClient:
         self._process = None
         self._stderr_task = None
         self._deferred_messages.clear()
+        self.active_session_id = None
 
         if process is not None:
             if process.stdin is not None:
@@ -317,6 +437,50 @@ class AgentRpcClient:
             ConnectionResetError,
         ) as exc:
             raise self._exited_error() from exc
+
+    async def _request(
+        self,
+        method: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Make a finite control request while no prompt is streaming."""
+
+        async with self._run_lock:
+            await self.start()
+            request_id = self._next_request_id()
+            await self._send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": method,
+                    "params": params,
+                }
+            )
+
+            while True:
+                message = await self._read_message()
+
+                if message.get("id") != request_id:
+                    if message.get("method") in {
+                        "agent.event",
+                        "agent.approval_requested",
+                    }:
+                        self._deferred_messages.append(message)
+                        continue
+                    raise RpcClientError(
+                        "received a response for an unexpected request"
+                    )
+
+                error = message.get("error")
+                if error is not None:
+                    raise self._response_error(error)
+
+                result = message.get("result")
+                if not isinstance(result, dict):
+                    raise RpcClientError(
+                        "JSON-RPC response is missing a result object"
+                    )
+                return result
 
     async def _read_message(self) -> dict[str, Any]:
         if self._deferred_messages:
@@ -434,6 +598,17 @@ class AgentRpcClient:
             )
 
         return RpcResponseError(code, message)
+
+    @staticmethod
+    def _session_from_result(result: dict[str, Any]) -> SessionRecord:
+        value = result.get("session")
+        if not isinstance(value, dict):
+            raise RpcClientError("session result is missing a session object")
+
+        try:
+            return SessionRecord.model_validate(value)
+        except Exception as exc:
+            raise RpcClientError("session result is invalid") from exc
 
     async def _capture_stderr(
         self,
