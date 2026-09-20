@@ -23,6 +23,8 @@ def test_defaults_when_nothing_is_set(isolated):
     r = config.load(isolated, env={})
     assert r["model"].value == "claude-opus-5"
     assert r["model"].layer == "default"
+    assert r["permission_mode"].value == "ask"
+    assert r["tool_permission_modes"].value == {}
 
 
 def test_project_beats_user(isolated):
@@ -75,3 +77,68 @@ def test_malformed_json_is_rejected(isolated):
     p.write_text("{not json")
     with pytest.raises(ConfigError, match="invalid JSON"):
         config.load(isolated, env={})
+
+
+def test_project_can_set_default_and_per_tool_permission_modes(isolated):
+    write(
+        isolated / ".agent/config.json",
+        {
+            "permission_mode": "auto",
+            "tool_permission_modes": {
+                "bash": "ask",
+                "edit_file": "auto",
+            },
+        },
+    )
+
+    settings = config.values(config.load(isolated, env={}))
+
+    assert settings["permission_mode"] == "auto"
+    assert settings["tool_permission_modes"] == {
+        "bash": "ask",
+        "edit_file": "auto",
+    }
+
+
+def test_invalid_permission_modes_are_rejected_at_configuration_time(isolated):
+    write(
+        isolated / ".agent/config.json",
+        {"permission_mode": "dangerously_fast"},
+    )
+
+    with pytest.raises(ConfigError, match="permission_mode must be one of"):
+        config.load(isolated, env={})
+
+
+def test_invalid_per_tool_permission_mode_is_rejected(isolated):
+    write(
+        isolated / ".agent/config.json",
+        {"tool_permission_modes": {"bash": "dangerously_fast"}},
+    )
+
+    with pytest.raises(
+        ConfigError,
+        match=r"tool_permission_modes\['bash'\]",
+    ):
+        config.load(isolated, env={})
+
+
+def test_permission_mode_and_tool_overrides_can_come_from_the_environment(isolated):
+    resolved = config.load(
+        isolated,
+        env={
+            "AGENT_PERMISSION_MODE": "readonly",
+            "AGENT_TOOL_PERMISSION_MODES": '{"bash": "ask"}',
+        },
+    )
+
+    assert resolved["permission_mode"].value == "readonly"
+    assert resolved["tool_permission_modes"].value == {"bash": "ask"}
+
+
+def test_non_object_tool_permission_environment_value_is_rejected(isolated):
+    with pytest.raises(ConfigError, match="expected a JSON object"):
+        config.load(
+            isolated,
+            env={"AGENT_TOOL_PERMISSION_MODES": "[]"},
+        )

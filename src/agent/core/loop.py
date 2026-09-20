@@ -31,6 +31,7 @@ from agent.core.ledger import (
     TaskLedger,
     TaskLedgerSnapshot,
 )
+from agent.core.permission import PermissionPolicy
 from agent.core.retry import RetryPolicy
 from agent.core.telemetry import SessionTelemetry
 from agent.events import (
@@ -76,6 +77,7 @@ class AgentLoop:
         max_iterations: int = 10,
         retry_policy: RetryPolicy | None = None,
         telemetry: SessionTelemetry | None = None,
+        permissions: PermissionPolicy | None = None,
         context_compactor: ContextCompactor | None = None,
         model_capabilities: ModelCapabilities | None = None,
         token_counter: TokenCounter | None = None,
@@ -110,7 +112,7 @@ class AgentLoop:
         self._provider = provider
         self._request_template = request_template
         self._registry = registry
-        self._dispatcher = ToolDispatcher(registry)
+        self._dispatcher = ToolDispatcher(registry, permissions=permissions)
         self._max_iterations = max_iterations
         self._telemetry = telemetry or SessionTelemetry()
         self._retry_policy = retry_policy or RetryPolicy()
@@ -177,6 +179,10 @@ class AgentLoop:
         continuation: Message | None = None
         previous_summary: str | None = None
         self._ledger = TaskLedger()
+        untrusted_tool_output_seen = any(
+            isinstance(event, ToolResult)
+            for event in history
+        )
 
         for _ in range(self._max_iterations):
             retries_completed = 0
@@ -372,7 +378,15 @@ class AgentLoop:
                     yield error
                     return
 
-                results = await self._dispatcher.dispatch_all(calls)
+                results = await self._dispatcher.dispatch_all(
+                    calls,
+                    contains_untrusted_content=(
+                        untrusted_tool_output_seen
+                    ),
+                )
+                if results:
+                    untrusted_tool_output_seen = True
+
                 calls_by_id = {
                     call.call_id: call
                     for call in calls

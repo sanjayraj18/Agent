@@ -16,7 +16,9 @@ from agent.auth.credentials import ApiKey
 from agent.auth.resolver import CredentialError, resolve
 from agent.auth.store import FileStore, StoreError
 from agent.core.costs import calculate_known_model_cost
+from agent.core.grants import GrantStoreError, ProjectGrantStore
 from agent.core.loop import AgentLoop
+from agent.core.permission import PermissionPolicy
 from agent.core.telemetry import SessionTelemetry
 from agent.events import AssistantEnd, ErrorEvent, Event, SessionStarted,ContextCompacted, TextDelta, ThinkingDelta, ToolCallStart, Usage, UserMessage
 from agent.providers.anthropic_raw import AnthropicRawProvider
@@ -130,7 +132,6 @@ async def _headless_run(
     credential,
     settings: dict,
 ) -> AsyncIterator[Event]:
-  
     provider = AnthropicRawProvider(credential)
     emit = EventFactory(session_id=uuid4().hex[:12])
 
@@ -144,30 +145,60 @@ async def _headless_run(
     )
     user_message = emit(UserMessage, text=prompt)
 
-    request_template = ProviderRequest(
-        model=settings["model"],
-        max_tokens=settings["max_tokens"],
-        effort=settings["effort"],
-        messages=[],
-        cache_stable_prefix=True
-    )
-
-    loop = AgentLoop(
-        provider=provider,
-        request_template=request_template,
-        registry=ToolRegistry(
-            [
-                ReadFileTool(workspace),
-                GlobTool(workspace),
-                GrepTool(workspace),
-                WriteFileTool(workspace),
-                EditFileTool(workspace),
-                BashTool(workspace, registry=processes),
-            ]
-        ),
-    )
-
     try:
+        try:
+            grants = ProjectGrantStore.load(workspace.root)
+            permissions = PermissionPolicy(
+                default_mode=settings["permission_mode"],
+                tool_modes=settings["tool_permission_modes"],
+                grants=grants,
+            )
+        except (GrantStoreError, ValueError) as exc:
+            yield session_started
+            yield user_message
+            yield emit(
+                ErrorEvent,
+                kind="permission_configuration_error",
+                message=str(exc),
+                retryable=False,
+            )
+            return
+
+        logs.get("permissions").info(
+            "permission policy loaded",
+            extra={
+                "default_mode": settings["permission_mode"],
+                "tool_overrides": sorted(
+                    settings["tool_permission_modes"]
+                ),
+                "project_grant_count": len(grants.grants),
+            },
+        )
+
+        request_template = ProviderRequest(
+            model=settings["model"],
+            max_tokens=settings["max_tokens"],
+            effort=settings["effort"],
+            messages=[],
+            cache_stable_prefix=True,
+        )
+
+        loop = AgentLoop(
+            provider=provider,
+            request_template=request_template,
+            registry=ToolRegistry(
+                [
+                    ReadFileTool(workspace),
+                    GlobTool(workspace),
+                    GrepTool(workspace),
+                    WriteFileTool(workspace),
+                    EditFileTool(workspace),
+                    BashTool(workspace, registry=processes),
+                ]
+            ),
+            permissions=permissions,
+        )
+
         yield session_started
         yield user_message
 
@@ -177,14 +208,16 @@ async def _headless_run(
         ):
             if isinstance(event, AssistantEnd):
                 _log_live_telemetry(loop.telemetry)
+
             elif isinstance(event, ContextCompacted):
                 _log_context_compaction(event)
+
             yield event
 
     finally:
         await processes.close()
         await provider.aclose()
-
+        
 
 async def _run(prompt: str, credential, settings: dict) -> int:
     provider = AnthropicRawProvider(credential)
@@ -236,8 +269,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="agent")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    permission_modes = [
+        "readonly",
+        "ask",
+        "auto",
+        "full",
+    ]
+
     sub.add_parser("config", help="show resolved settings and where they came from")
     serve = sub.add_parser("serve", help="run the headless JSON-RPC server over stdin/stdout",)
+    serve.add_argument( "--permission-mode",dest="permission_mode",choices=permission_modes)
     serve.add_argument("--model")
     serve.add_argument("--effort",choices=["low", "medium", "high", "xhigh", "max"])
     serve.add_argument("--api-key", dest="api_key")
@@ -252,6 +293,7 @@ def main() -> None:
     run.add_argument("prompt")
     run.add_argument("--model")
     run.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"])
+    run.add_argument( "--permission-mode", dest="permission_mode", choices=permission_modes,)
     run.add_argument("--api-key", dest="api_key")
 
     args = parser.parse_args()
@@ -262,6 +304,7 @@ def main() -> None:
             {
                 "model": getattr(args, "model", None),
                 "effort": getattr(args, "effort", None),
+                "permission_mode": getattr(args, "permission_mode", None),
             },
         )
     except config.ConfigError as exc:
@@ -274,11 +317,11 @@ def main() -> None:
     if args.command in {"run", "serve"}:
         capabilities = capabilities_for_model(settings["model"])
 
-    if capabilities is None:
-        logs.get("context").warning(
-            "context management disabled for unknown model",
-            extra={"model": settings["model"]},
-        )
+        if capabilities is None:
+            logs.get("context").warning(
+                "context management disabled for unknown model",
+                extra={"model": settings["model"]},
+            )
 
     if args.command == "config":
         print(config.render(resolved_config))

@@ -71,9 +71,13 @@ def _assistant_message(blocks : dict[int, _AssistantBlock]) -> Message | None:
 
 
 #important function, will convert events to Message format which model needs
-def messages_from_events(events : Sequence[Event], *, prefix_messages : Sequence[Message]) -> list[Message]:
+def messages_from_events(
+    events: Sequence[Event],
+    *,
+    prefix_messages: Sequence[Message] = (),
+) -> list[Message]:
 
-    messages : list[Message] = []
+    messages: list[Message] = list(prefix_messages)
     active_assistant : dict[int, _AssistantBlock] | None = None
     pending_tool_results : list[ContentPart] = []
 

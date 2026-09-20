@@ -1,5 +1,6 @@
 from typing import Any
 
+from agent.core.permission import PermissionPolicy
 from agent.providers.base import ToolResultPart, ToolUsePart
 from agent.tools.base import Tool, ToolExecutionResult
 from agent.tools.dispatcher import ToolDispatcher
@@ -47,11 +48,12 @@ class ExplodingTool(Tool):
 def _call(
     call_id: str,
     name: str,
+    arguments: dict[str, Any] | None = None,
 ) -> ToolUsePart:
     return ToolUsePart(
         call_id=call_id,
         name=name,
-        arguments={},
+        arguments=arguments or {},
     )
 
 
@@ -144,3 +146,87 @@ async def test_dispatch_all_returns_results_in_requested_order():
         ToolResultPart(call_id="call-1", content="first result"),
         ToolResultPart(call_id="call-2", content="second result"),
     ]
+
+
+class CountingTool(ResultTool):
+    def __init__(self, name: str) -> None:
+        super().__init__(name, ToolExecutionResult(content="ran"))
+        self.calls = 0
+
+    async def execute(
+        self,
+        arguments: dict[str, Any],
+    ) -> ToolExecutionResult:
+        self.calls += 1
+        return await super().execute(arguments)
+
+
+class ApproveAll:
+    async def approve(self, action, decision) -> bool:
+        return True
+
+
+async def test_dispatcher_denies_a_readonly_workspace_write_without_running_it():
+    tool = CountingTool("write_file")
+    dispatcher = ToolDispatcher(
+        ToolRegistry([tool]),
+        permissions=PermissionPolicy(default_mode="readonly"),
+    )
+
+    result = await dispatcher.dispatch(
+        _call("call-1", "write_file", {"path": "notes.txt"})
+    )
+
+    assert result.is_error is True
+    assert "permission denied" in result.content
+    assert tool.calls == 0
+
+
+async def test_dispatcher_requires_approval_without_running_an_ask_action():
+    tool = CountingTool("edit_file")
+    dispatcher = ToolDispatcher(
+        ToolRegistry([tool]),
+        permissions=PermissionPolicy(default_mode="ask"),
+    )
+
+    result = await dispatcher.dispatch(
+        _call("call-1", "edit_file", {"path": "notes.txt"})
+    )
+
+    assert result.is_error is True
+    assert "permission required" in result.content
+    assert tool.calls == 0
+
+
+async def test_dispatcher_runs_an_ask_action_only_after_human_approval():
+    tool = CountingTool("edit_file")
+    dispatcher = ToolDispatcher(
+        ToolRegistry([tool]),
+        permissions=PermissionPolicy(default_mode="ask"),
+        approval_handler=ApproveAll(),
+    )
+
+    result = await dispatcher.dispatch(
+        _call("call-1", "edit_file", {"path": "notes.txt"})
+    )
+
+    assert result.is_error is False
+    assert result.content == "ran"
+    assert tool.calls == 1
+
+
+async def test_dispatcher_blocks_untrusted_influenced_actions_without_running_them():
+    tool = CountingTool("write_file")
+    dispatcher = ToolDispatcher(
+        ToolRegistry([tool]),
+        permissions=PermissionPolicy(default_mode="full"),
+    )
+
+    result = await dispatcher.dispatch(
+        _call("call-1", "write_file", {"path": "notes.txt"}),
+        contains_untrusted_content=True,
+    )
+
+    assert result.is_error is True
+    assert "untrusted content" in result.content
+    assert tool.calls == 0

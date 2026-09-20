@@ -91,7 +91,7 @@ async def test_rejects_invalid_bash_requests(
     assert result.is_error is True
     assert result.content == message
 
-def _tool(name: str) -> ToolSpec:
+def _tool_spec(name: str) -> ToolSpec:
     return ToolSpec(
         name=name,
         description=f"{name} tool",
@@ -123,7 +123,7 @@ def test_request_builds_a_cache_plan_in_stable_then_dynamic_order():
         max_tokens=1_024,
         system="You are a coding agent.",
         stable_context="Only modify files inside the workspace.",
-        tools=[_tool("read_file"), _tool("grep")],
+        tools=[_tool_spec("read_file"), _tool_spec("grep")],
         messages=[_user_message("Inspect the test failure.")],
         cache_stable_prefix=True,
     )
@@ -148,7 +148,7 @@ def test_changing_messages_does_not_change_request_cache_fingerprint():
         "model": "claude-sonnet-5",
         "max_tokens": 1_024,
         "system": "You are a coding agent.",
-        "tools": [_tool("read_file")],
+        "tools": [_tool_spec("read_file")],
         "cache_stable_prefix": True,
     }
 
@@ -184,11 +184,11 @@ def test_changing_tool_registration_order_changes_the_fingerprint():
 
     first_request = ProviderRequest(
         **common_fields,
-        tools=[_tool("read_file"), _tool("grep")],
+        tools=[_tool_spec("read_file"), _tool_spec("grep")],
     )
     second_request = ProviderRequest(
         **common_fields,
-        tools=[_tool("grep"), _tool("read_file")],
+        tools=[_tool_spec("grep"), _tool_spec("read_file")],
     )
 
     assert first_request.cache_plan is not None

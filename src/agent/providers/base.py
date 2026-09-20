@@ -49,6 +49,9 @@ class ToolResultPart(BaseModel):
     call_id: str
     content: str
     is_error: bool = False
+    # Tool output can contain file contents, command output, or remote data.
+    # Treat it as data by default when it is sent back to an LLM.
+    is_untrusted: bool = True
 
 
 ContentPart = Annotated[
