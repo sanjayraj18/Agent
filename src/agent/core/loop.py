@@ -52,7 +52,7 @@ from agent.providers.base import (
     ToolResultPart,
     ToolUsePart,
 )
-from agent.tools.dispatcher import ToolDispatcher
+from agent.tools.dispatcher import ApprovalHandler, ToolDispatcher
 from agent.tools.registry import ToolRegistry
 
 
@@ -78,6 +78,7 @@ class AgentLoop:
         retry_policy: RetryPolicy | None = None,
         telemetry: SessionTelemetry | None = None,
         permissions: PermissionPolicy | None = None,
+        approval_handler: ApprovalHandler | None = None,
         context_compactor: ContextCompactor | None = None,
         model_capabilities: ModelCapabilities | None = None,
         token_counter: TokenCounter | None = None,
@@ -112,7 +113,11 @@ class AgentLoop:
         self._provider = provider
         self._request_template = request_template
         self._registry = registry
-        self._dispatcher = ToolDispatcher(registry, permissions=permissions)
+        self._dispatcher = ToolDispatcher(
+            registry,
+            permissions=permissions,
+            approval_handler=approval_handler,
+        )
         self._max_iterations = max_iterations
         self._telemetry = telemetry or SessionTelemetry()
         self._retry_policy = retry_policy or RetryPolicy()
@@ -403,6 +408,7 @@ class AgentLoop:
                         call_id=result.call_id,
                         content=result.content,
                         is_error=result.is_error,
+                        file_change=result.file_change,
                     )
                     history.append(tool_result)
                     yield tool_result

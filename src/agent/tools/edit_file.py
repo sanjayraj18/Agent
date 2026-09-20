@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.tools.base import Tool, ToolExecutionResult
+from agent.tools.changes import FileChange
 from agent.tools.workspace import Workspace, WorkspacePathError
 
 
@@ -132,8 +133,15 @@ class EditFileTool(Tool):
                 is_error=True,
             )
 
+        relative_path = self._workspace.relative(path)
         return ToolExecutionResult(
-            content=f"edited {self._workspace.relative(path)} (replaced 1 occurrence)"
+            content=f"edited {relative_path} (replaced 1 occurrence)",
+            file_change=FileChange(
+                path=relative_path,
+                before=text,
+                after=updated,
+                operation="updated",
+            ),
         )
 
     @staticmethod

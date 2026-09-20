@@ -36,6 +36,7 @@ from agent.sandbox.runtime import create_sandbox
 from agent.security import SecretScanner
 from agent.server.jsonrpc import JsonRpcServer
 from agent.tools.bash import BashTool
+from agent.tools.dispatcher import ApprovalHandler
 from agent.tools.edit_file import EditFileTool
 from agent.tools.glob import GlobTool
 from agent.tools.grep import GrepTool
@@ -216,6 +217,7 @@ async def _headless_run(
     prompt: str,
     credential,
     settings: dict,
+    approval_handler: ApprovalHandler | None = None,
 ) -> AsyncIterator[Event]:
     provider = AnthropicRawProvider(credential)
     emit = EventFactory(session_id=uuid4().hex[:12])
@@ -327,6 +329,7 @@ async def _headless_run(
                 ]
             ),
             permissions=permissions,
+            approval_handler=approval_handler,
         )
 
         yield session_started
@@ -414,6 +417,7 @@ def main() -> None:
     ]
 
     sub.add_parser("config", help="show resolved settings and where they came from")
+    sub.add_parser("tui", help="start the interactive terminal interface")
     serve = sub.add_parser("serve", help="run the headless JSON-RPC server over stdin/stdout",)
     serve.add_argument( "--permission-mode",dest="permission_mode",choices=permission_modes)
     serve.add_argument("--model")
@@ -492,6 +496,12 @@ def main() -> None:
         print(config.render(resolved_config))
         return
 
+    if args.command == "tui":
+        from agent.tui.app import run_tui
+
+        run_tui()
+        return
+
     store = FileStore()
 
     # login/logout must come BEFORE resolve() — neither needs an existing
@@ -530,7 +540,21 @@ def main() -> None:
                 settings,
             )
 
-        server = JsonRpcServer(run_agent)
+        def run_agent_with_approval(
+            prompt: str,
+            approval_handler: ApprovalHandler,
+        ) -> AsyncIterator[Event]:
+            return _headless_run(
+                prompt,
+                resolved_credential.credential,
+                settings,
+                approval_handler,
+            )
+
+        server = JsonRpcServer(
+            run_agent,
+            run_agent_with_approval=run_agent_with_approval,
+        )
         asyncio.run(server.serve(sys.stdin, sys.stdout))
         return
 

@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from agent.tools.base import Tool, ToolExecutionResult
+from agent.tools.changes import FileChange
 from agent.tools.workspace import Workspace, WorkspacePathError
 
 
@@ -82,16 +83,15 @@ class WriteFileTool(Tool):
         except WorkspacePathError as exc:
             return ToolExecutionResult(content=str(exc), is_error=True)
 
-        if path.exists() and not path.is_file():
-            return ToolExecutionResult(
-                content=f"path is not a regular file: {path_value}",
-                is_error=True,
-            )
-        if path.exists() and not overwrite:
-            return ToolExecutionResult(
-                content=f"file already exists: {path_value}",
-                is_error=True,
-            )
+        existing_text = self._existing_text(
+            path,
+            path_value,
+            overwrite=overwrite,
+        )
+        if isinstance(existing_text, ToolExecutionResult):
+            return existing_text
+
+        before, operation = existing_text
 
         try:
             if not path.parent.exists():
@@ -116,9 +116,76 @@ class WriteFileTool(Tool):
                 is_error=True,
             )
 
+        relative_path = self._workspace.relative(path)
         return ToolExecutionResult(
-            content=f"wrote {len(data)} bytes to {self._workspace.relative(path)}"
+            content=f"wrote {len(data)} bytes to {relative_path}",
+            file_change=FileChange(
+                path=relative_path,
+                before=before,
+                after=content,
+                operation=operation,
+            ),
         )
+
+    def _existing_text(
+        self,
+        path: Path,
+        path_value: str,
+        *,
+        overwrite: bool,
+    ) -> tuple[str, Literal["created", "updated"]] | ToolExecutionResult:
+        """Read the old text before replacement so a truthful diff exists."""
+
+        if not path.exists():
+            return "", "created"
+
+        if not path.is_file():
+            return ToolExecutionResult(
+                content=f"path is not a regular file: {path_value}",
+                is_error=True,
+            )
+
+        if not overwrite:
+            return ToolExecutionResult(
+                content=f"file already exists: {path_value}",
+                is_error=True,
+            )
+
+        try:
+            if path.stat().st_size > self._max_bytes:
+                return ToolExecutionResult(
+                    content=(
+                        "existing file exceeds the "
+                        f"{self._max_bytes}-byte diff limit"
+                    ),
+                    is_error=True,
+                )
+            raw = path.read_bytes()
+        except OSError as exc:
+            return ToolExecutionResult(
+                content=f"could not read existing file: {exc}",
+                is_error=True,
+            )
+
+        if b"\x00" in raw:
+            return ToolExecutionResult(
+                content=(
+                    "existing file is binary; refusing to overwrite it "
+                    "without a text diff"
+                ),
+                is_error=True,
+            )
+
+        try:
+            return raw.decode("utf-8"), "updated"
+        except UnicodeDecodeError:
+            return ToolExecutionResult(
+                content=(
+                    "existing file is not valid UTF-8 text; refusing to "
+                    "overwrite it without a text diff"
+                ),
+                is_error=True,
+            )
 
     @staticmethod
     def _atomic_write(path: Path, data: bytes) -> None:

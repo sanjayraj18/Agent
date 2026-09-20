@@ -133,6 +133,11 @@ class ToolDispatcher:
             call_id=call.call_id,
             content=result.content,
             is_error=result.is_error,
+            file_change=(
+                result.file_change.event_payload()
+                if result.file_change is not None
+                else None
+            ),
         )
 
     async def dispatch_all(

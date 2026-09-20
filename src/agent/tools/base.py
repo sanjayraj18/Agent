@@ -6,12 +6,15 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from agent.providers.base import ToolSpec
+from agent.tools.changes import FileChange
 
 
 class ToolExecutionResult(BaseModel):
     model_config = ConfigDict(frozen=True)
     content : str
     is_error : bool = False
+    # Local UI metadata. It is not added to the LLM conversation.
+    file_change: FileChange | None = None
 
 
 class Tool(ABC):

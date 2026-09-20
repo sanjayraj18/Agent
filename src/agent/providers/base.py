@@ -52,6 +52,12 @@ class ToolResultPart(BaseModel):
     # Tool output can contain file contents, command output, or remote data.
     # Treat it as data by default when it is sent back to an LLM.
     is_untrusted: bool = True
+    # This data crosses dispatcher -> agent loop only. ``exclude=True`` means
+    # a provider cannot accidentally receive the TUI's before/after diff.
+    file_change: dict[str, str] | None = Field(
+        default=None,
+        exclude=True,
+    )
 
 
 ContentPart = Annotated[

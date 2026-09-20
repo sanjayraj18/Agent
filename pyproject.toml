@@ -6,6 +6,7 @@ dependencies = [
     "anthropic>=1.5.0",
     "httpx>=0.28.1",
     "pydantic>=2.13.5",
+    "textual[syntax]>=1.0.0",
 ]
 
 [project.scripts]

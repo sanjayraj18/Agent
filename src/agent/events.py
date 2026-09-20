@@ -104,6 +104,38 @@ class ToolResult(EventBase):
     call_id: str
     content: str
     is_error: bool = False
+    # UI-only before/after information; conversation.py intentionally omits
+    # it when building the provider's next request.
+    file_change: dict[str, str] | None = None
+
+
+class PermissionApprovalRequested(BaseModel):
+    """
+    A control message sent from the server to an interactive client.
+
+    This is deliberately not an ``EventBase`` event. Engine events have a
+    session sequence number produced by ``EventFactory``; a server-side
+    approval request is produced while that engine is paused and therefore
+    travels on the separate JSON-RPC control channel.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    type: Literal["permission.approval_requested"] = (
+        "permission.approval_requested"
+    )
+    approval_id: str = Field(min_length=1)
+    request_id: str | int
+    tool_name: str = Field(min_length=1)
+    arguments: dict[str, object]
+    reason: str = Field(min_length=1)
+    risk: Literal[
+        "read",
+        "workspace_write",
+        "shell_execute",
+        "process_control",
+        "unknown",
+    ]
 
 
 class ErrorEvent(EventBase):
