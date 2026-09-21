@@ -8,6 +8,10 @@ It is being built as an OpenAI-first alpha. The design keeps model providers,
 tools, UI transports, and persistence separate so the system can grow without
 rewriting its core loop.
 
+<p align="center">
+  <img src="docs/assets/tui-preview.png" alt="Agent terminal user interface" width="900">
+</p>
+
 ## Architecture at a glance
 
 ```text
