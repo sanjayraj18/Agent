@@ -38,6 +38,8 @@ DEFAULTS: dict[str, Any] = {
     # durable conversations easy to back up, while an organization can point
     # it at a managed location with AGENT_SESSION_DATABASE_PATH.
     "session_database_path": ".agent/sessions.sqlite3",
+    "benchmark_attempts": 3,
+    "benchmark_parallelism": 1,
     "log_level": "info",
 }
 
@@ -56,6 +58,8 @@ ENV_MAP: dict[str, str] = {
         "sandbox_network_allowed"
     ),
     "AGENT_SESSION_DATABASE_PATH": "session_database_path",
+    "AGENT_BENCHMARK_ATTEMPTS": "benchmark_attempts",
+    "AGENT_BENCHMARK_PARALLELISM": "benchmark_parallelism",
 }
 
 
@@ -190,6 +194,7 @@ def load(
     _validate_permission_settings(resolved)
     _validate_sandbox_settings(resolved)
     _validate_provider_settings(resolved)
+    _validate_benchmark_settings(resolved)
 
     return resolved
 
@@ -278,6 +283,26 @@ def _validate_provider_settings(
         raise ConfigError(
             "provider_base_url must start with https:// or http://"
         )
+
+
+def _validate_benchmark_settings(
+    resolved: Mapping[str, Resolved],
+) -> None:
+    attempts = resolved["benchmark_attempts"].value
+    parallelism = resolved["benchmark_parallelism"].value
+
+    if not isinstance(attempts, int) or isinstance(attempts, bool) or attempts < 3:
+        raise ConfigError("benchmark_attempts must be an integer of at least 3")
+
+    if (
+        not isinstance(parallelism, int)
+        or isinstance(parallelism, bool)
+        or parallelism < 1
+    ):
+        raise ConfigError("benchmark_parallelism must be a positive integer")
+
+    if parallelism > attempts:
+        raise ConfigError("benchmark_parallelism cannot exceed benchmark_attempts")
 
     
 def _validate_permission_settings(

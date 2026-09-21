@@ -273,11 +273,13 @@ async def _headless_run(
     credential: Credential,
     settings: dict,
     approval_handler: ApprovalHandler | None = None,
+    *,
+    workspace_root: Path | None = None,
 ) -> AsyncIterator[Event]:
     provider = _create_provider(credential, settings)
     emit = EventFactory(session_id=uuid4().hex[:12])
 
-    workspace = Workspace(Path.cwd())
+    workspace = Workspace(workspace_root or Path.cwd())
     processes = ProcessRegistry()
     sandbox_temporary_directory = None
 
@@ -697,6 +699,90 @@ def main() -> None:
     auth_sub.add_parser("login", help="store a credential")
     auth_sub.add_parser("logout", help="remove the stored credential")
 
+    bench = sub.add_parser(
+        "bench",
+        help="run reproducible coding-agent benchmarks",
+    )
+    bench_sub = bench.add_subparsers(
+        dest="bench_command",
+        required=True,
+    )
+    bench_run = bench_sub.add_parser(
+        "run",
+        help="run one task repeatedly in isolated workspaces",
+    )
+    bench_run.add_argument("task_id")
+    bench_run.add_argument(
+        "--provider",
+        choices=["anthropic", "openai", "auto"],
+    )
+    bench_run.add_argument("--provider-base-url")
+    bench_run.add_argument("--model")
+    bench_run.add_argument(
+        "--effort",
+        choices=["low", "medium", "high", "xhigh", "max"],
+    )
+    bench_run.add_argument(
+        "--permission-mode",
+        dest="permission_mode",
+        choices=permission_modes,
+    )
+    bench_run.add_argument(
+        "--sandbox-mode",
+        choices=sandbox_modes,
+    )
+    bench_run.add_argument(
+        "--sandbox-network-allowed",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    bench_run.add_argument("--api-key", dest="api_key")
+    bench_run.add_argument(
+        "--container-image",
+        required=True,
+        help="verification image pinned as name@sha256:<digest>",
+    )
+    bench_run.add_argument(
+        "--attempts",
+        dest="benchmark_attempts",
+        type=int,
+    )
+    bench_run.add_argument(
+        "--parallelism",
+        dest="benchmark_parallelism",
+        type=int,
+    )
+    bench_run.add_argument(
+        "--benchmark-root",
+        type=Path,
+        default=Path("benchmarks"),
+    )
+    bench_run.add_argument(
+        "--results-root",
+        type=Path,
+        default=Path("benchmarks/results"),
+    )
+    bench_run.add_argument(
+        "--keep-workspaces",
+        action="store_true",
+        help="preserve copied workspaces after the benchmark completes",
+    )
+
+    bench_report = bench_sub.add_parser(
+        "report",
+        help="render Markdown from a saved JSON scoreboard",
+    )
+    bench_report.add_argument(
+        "--scoreboard-json",
+        type=Path,
+        default=Path("benchmarks/results/scoreboard.json"),
+    )
+    bench_report.add_argument(
+        "--output",
+        type=Path,
+        default=Path("benchmarks/results/scoreboard.md"),
+    )
+
     run = sub.add_parser("run", help="send one prompt and stream the reply")
     run.add_argument("prompt")
     run.add_argument(
@@ -748,6 +834,16 @@ def main() -> None:
                     "session_database_path",
                     None,
                 ),
+                "benchmark_attempts": getattr(
+                    args,
+                    "benchmark_attempts",
+                    None,
+                ),
+                "benchmark_parallelism": getattr(
+                    args,
+                    "benchmark_parallelism",
+                    None,
+                ),
             },
         )
     except config.ConfigError as exc:
@@ -757,7 +853,9 @@ def main() -> None:
     settings = config.values(resolved_config)
     logs.setup(level=settings["log_level"])
 
-    if args.command in {"run", "serve"}:
+    if args.command in {"run", "serve", "bench"} and not (
+        args.command == "bench" and args.bench_command == "report"
+    ):
         capabilities = capabilities_for_model(settings["model"])
 
         if capabilities is None:
@@ -774,6 +872,19 @@ def main() -> None:
         from agent.tui.app import run_tui
 
         run_tui()
+        return
+
+    if args.command == "bench" and args.bench_command == "report":
+        from agent.benchmark.report import read_scoreboard, render_markdown
+
+        try:
+            rows = read_scoreboard(args.scoreboard_json)
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(render_markdown(rows), encoding="utf-8")
+        except ValueError as exc:
+            print(f"benchmark report error: {exc}", file=sys.stderr)
+            raise SystemExit(2)
+        print(f"wrote {args.output}")
         return
 
     try:
@@ -844,6 +955,51 @@ def main() -> None:
             asyncio.run(socket_server.serve_forever())
         else:
             asyncio.run(server.serve(sys.stdin, sys.stdout))
+        return
+
+    if args.command == "bench":
+        from agent.benchmark.cli import run_benchmark
+
+        async def benchmark_agent_attempt(
+            workspace_root: Path,
+            prompt: str,
+        ) -> AsyncIterator[Event]:
+            async for event in _headless_run(
+                prompt,
+                resolved_credential.credential,
+                settings,
+                workspace_root=workspace_root,
+            ):
+                yield event
+
+        try:
+            execution = asyncio.run(
+                run_benchmark(
+                    project_root=Path.cwd(),
+                    benchmark_root=args.benchmark_root,
+                    results_root=args.results_root,
+                    task_id=args.task_id,
+                    provider=selected_provider,
+                    model=settings["model"],
+                    container_image=args.container_image,
+                    attempts=settings["benchmark_attempts"],
+                    parallelism=settings["benchmark_parallelism"],
+                    agent_settings=settings,
+                    agent_attempt=benchmark_agent_attempt,
+                    keep_workspaces=args.keep_workspaces,
+                )
+            )
+        except (ValueError, RuntimeError) as exc:
+            print(f"benchmark error: {exc}", file=sys.stderr)
+            raise SystemExit(2)
+
+        row = execution.scoreboard
+        print(
+            f"{row.task_id}: {row.passed_attempts}/{row.attempts} passed "
+            f"({row.pass_rate:.2%})"
+        )
+        print(f"results: {execution.results_path}")
+        print(f"scoreboard: {execution.scoreboard_path}")
         return
 
     raise SystemExit(

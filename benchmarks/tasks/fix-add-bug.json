@@ -1,0 +1,16 @@
+{
+  "task_id": "fix-add-bug",
+  "title": "Fix a simple addition bug",
+  "prompt": "Inspect the repository, fix the bug in src/math_utils.py, and run the tests. Only modify the implementation file.",
+  "fixture": "fixtures/fix-add-bug",
+  "verification": [
+    {
+      "argv": ["python", "-m", "pytest", "-q"],
+      "timeout_seconds": 120
+    }
+  ],
+  "timeout_seconds": 600,
+  "allowed_changed_paths": [
+    "src/math_utils.py"
+  ]
+}

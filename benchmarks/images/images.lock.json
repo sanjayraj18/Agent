@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "images": {},
+  "note": "Add only built image references pinned as name@sha256:<64-hex-digest>."
+}
