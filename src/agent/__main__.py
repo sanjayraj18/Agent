@@ -1005,3 +1005,7 @@ def main() -> None:
     raise SystemExit(
         asyncio.run(_run(args.prompt, resolved_credential.credential, settings))
     )
+
+
+if __name__ == "__main__":
+    main()
