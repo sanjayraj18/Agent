@@ -958,7 +958,14 @@ def main() -> None:
         return
 
     if args.command == "bench":
+        from agent.benchmark.approvals import IsolatedBenchmarkApproval
         from agent.benchmark.cli import run_benchmark
+
+        # Benchmarks run against fresh fixture copies, not the user's project,
+        # and retain an enforced execution sandbox.  They cannot pause for a
+        # TUI approval, so this bridge resolves policy "ask" decisions only
+        # for the benchmark attempt.
+        benchmark_approval = IsolatedBenchmarkApproval()
 
         async def benchmark_agent_attempt(
             workspace_root: Path,
@@ -968,6 +975,7 @@ def main() -> None:
                 prompt,
                 resolved_credential.credential,
                 settings,
+                approval_handler=benchmark_approval,
                 workspace_root=workspace_root,
             ):
                 yield event
