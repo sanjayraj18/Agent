@@ -22,6 +22,11 @@ _SANDBOX_MODES = {
 
 
 DEFAULTS: dict[str, Any] = {
+    # ``auto`` is convenient when the selected model has a familiar provider
+    # prefix (claude-* or gpt-*); production configs should normally be
+    # explicit so a typo cannot silently select a different provider.
+    "provider": "anthropic",
+    "provider_base_url": None,
     "model": "claude-opus-5",
     "effort": "high",
     "max_tokens": 16_000,
@@ -38,6 +43,8 @@ DEFAULTS: dict[str, Any] = {
 
 
 ENV_MAP: dict[str, str] = {
+    "AGENT_PROVIDER": "provider",
+    "AGENT_PROVIDER_BASE_URL": "provider_base_url",
     "AGENT_MODEL": "model",
     "AGENT_EFFORT": "effort",
     "AGENT_MAX_TOKENS": "max_tokens",
@@ -182,6 +189,7 @@ def load(
 
     _validate_permission_settings(resolved)
     _validate_sandbox_settings(resolved)
+    _validate_provider_settings(resolved)
 
     return resolved
 
@@ -239,6 +247,36 @@ def _validate_sandbox_settings( resolved: Mapping[str, Resolved]) -> None:
     if not isinstance(network_allowed, bool):
         raise ConfigError(
             "sandbox_network_allowed must be a boolean"
+        )
+
+
+def _validate_provider_settings(
+    resolved: Mapping[str, Resolved],
+) -> None:
+    provider = resolved["provider"].value
+
+    if not isinstance(provider, str) or provider not in {
+        "anthropic",
+        "openai",
+        "auto",
+    }:
+        raise ConfigError(
+            "provider must be one of: anthropic, auto, openai; "
+            f"got {provider!r}"
+        )
+
+    base_url = resolved["provider_base_url"].value
+    if base_url is None:
+        return
+
+    if not isinstance(base_url, str) or not base_url.strip():
+        raise ConfigError(
+            "provider_base_url must be a non-empty http(s) URL or null"
+        )
+
+    if not base_url.startswith(("https://", "http://")):
+        raise ConfigError(
+            "provider_base_url must start with https:// or http://"
         )
 
     

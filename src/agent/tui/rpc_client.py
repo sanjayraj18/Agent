@@ -208,6 +208,7 @@ class AgentRpcClient:
         self,
         *,
         workspace: Path | None = None,
+        provider: str | None = None,
         model: str | None = None,
         title: str | None = None,
     ) -> SessionRecord:
@@ -216,6 +217,8 @@ class AgentRpcClient:
         params: dict[str, Any] = {}
         if workspace is not None:
             params["workspace"] = str(workspace)
+        if provider is not None:
+            params["provider"] = provider
         if model is not None:
             params["model"] = model
         if title is not None:

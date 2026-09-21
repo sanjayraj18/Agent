@@ -23,7 +23,7 @@ class MigrationResult:
 
 Migration = Callable[[sqlite3.Connection], None]
 
-LATEST_SCHEMA_VERSION = 1
+LATEST_SCHEMA_VERSION = 2
 
 _SESSION_STATUS_VALUES = ", ".join(
     f"'{status.value}'"
@@ -184,6 +184,20 @@ def _migration_1_create_session_tables(
     )
 
 
+def _migration_2_add_session_provider(
+    connection: sqlite3.Connection,
+) -> None:
+    """Give existing Anthropic-only sessions an explicit provider identity."""
+
+    connection.execute(
+        """
+        ALTER TABLE sessions
+        ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic'
+        CHECK(provider IN ('anthropic', 'openai'))
+        """
+    )
+
 _MIGRATIONS: dict[int, Migration] = {
     1: _migration_1_create_session_tables,
+    2: _migration_2_add_session_provider,
 }

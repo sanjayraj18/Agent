@@ -65,6 +65,39 @@ class ApiKey(_CredentialBase):
         return f"api_key (fp {self.fingerprint})"
 
 
+class OpenAIApiKey(_CredentialBase):
+    """An OpenAI API key.
+
+    This is deliberately a separate credential type: Anthropic and OpenAI use
+    different wire-level headers, so treating their keys as interchangeable
+    would make it easy to send a secret to the wrong provider.
+    """
+
+    type: Literal["openai_api_key"] = "openai_api_key"
+    value: SecretStr
+
+    def headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.value.get_secret_value()}"}
+
+    def is_expired(
+        self,
+        *,
+        now: datetime | None = None,
+        skew: float = DEFAULT_SKEW_SECONDS,
+    ) -> bool:
+        return False
+
+    @property
+    def fingerprint(self) -> str:
+        return _fingerprint(self.value.get_secret_value())
+
+    def to_storage(self) -> dict[str, Any]:
+        return {"type": "openai_api_key", "value": self.value.get_secret_value()}
+
+    def describe(self) -> str:
+        return f"openai_api_key (fp {self.fingerprint})"
+
+
 class OAuthToken(_CredentialBase):
     type: Literal["oauth"] = "oauth"
     access_token: SecretStr
@@ -118,5 +151,8 @@ def from_storage(data: dict[str, Any]) -> Credential:
     return CredentialAdapter.validate_python(data)
 
 
-Credential = Annotated[Union[ApiKey, OAuthToken], Field(discriminator="type")]
+Credential = Annotated[
+    Union[ApiKey, OpenAIApiKey, OAuthToken],
+    Field(discriminator="type"),
+]
 CredentialAdapter: TypeAdapter[Credential] = TypeAdapter(Credential)

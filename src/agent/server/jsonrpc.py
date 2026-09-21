@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from agent.events import ErrorEvent, Event, dumps
+from agent.providers.profiles import resolve_provider
 from agent.server.approval import ApprovalBroker
 from agent.server.session_service import SessionService
 from agent.tools.dispatcher import ApprovalHandler
@@ -64,6 +65,7 @@ class JsonRpcServer:
         session_service: SessionService | None = None,
         default_workspace: Path | str | None = None,
         default_model: str | None = None,
+        default_provider: str = "anthropic",
         approval_timeout_seconds: float = 120.0,
     ) -> None:
         if run_agent is None and session_service is None:
@@ -76,6 +78,10 @@ class JsonRpcServer:
             raise ValueError(
                 "default_model is required with session_service"
             )
+        if default_provider not in {"anthropic", "openai"}:
+            raise ValueError(
+                "default_provider must be anthropic or openai"
+            )
 
         self._run_agent = run_agent
         self._run_agent_with_approval = run_agent_with_approval
@@ -84,6 +90,7 @@ class JsonRpcServer:
             Path(default_workspace or Path.cwd()).expanduser().resolve()
         )
         self._default_model = default_model
+        self._default_provider = default_provider
         self._approval_timeout_seconds = approval_timeout_seconds
 
     async def serve(self, reader: TextIO, writer: TextIO) -> None:
@@ -437,6 +444,7 @@ class JsonRpcServer:
         if request.method == "session.create":
             workspace = params.get("workspace", self._default_workspace)
             model = params.get("model", self._default_model)
+            provider = params.get("provider", self._default_provider)
             title = params.get("title")
 
             if not isinstance(workspace, str) or not workspace.strip():
@@ -447,11 +455,28 @@ class JsonRpcServer:
                 raise ValueError(
                     "params.model must be a non-empty string"
                 )
+            if not isinstance(provider, str) or provider not in {
+                "anthropic",
+                "openai",
+            }:
+                raise ValueError(
+                    "params.provider must be anthropic or openai"
+                )
+            if provider != self._default_provider:
+                raise ValueError(
+                    "this server only has credentials for "
+                    f"{self._default_provider!r}"
+                )
+            try:
+                resolve_provider(provider, model)
+            except ValueError as exc:
+                raise ValueError(str(exc)) from exc
             if title is not None and not isinstance(title, str):
                 raise ValueError("params.title must be a string")
 
             session = await self._session_service.create_session(
                 workspace=workspace,
+                provider=provider,
                 model=model,
                 title=title,
             )

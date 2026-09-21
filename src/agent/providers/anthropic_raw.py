@@ -5,7 +5,13 @@ import httpx
 from agent.auth.credentials import Credential
 from agent.events import ErrorEvent, Event
 from agent.providers.anthropic_wire import AnthropicTranslator
-from agent.providers.base import ContentPart, EventFactory, Message, ProviderRequest
+from agent.providers.base import (
+    ContentPart,
+    EventFactory,
+    Message,
+    ProviderMetadata,
+    ProviderRequest,
+)
 from agent.providers.errors import Failure, classify_http, classify_transport
 from agent.providers.sse import iter_sse
 
@@ -136,6 +142,10 @@ class AnthropicRawProvider:
         self._base_url = base_url.rstrip("/")
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=timeout or DEFAULT_TIMEOUT)
+        self.metadata = ProviderMetadata(
+            provider_id="anthropic",
+            base_url=self._base_url,
+        )
 
     async def aclose(self) -> None:
         if self._owns_client:

@@ -5,7 +5,7 @@ from typing import AsyncIterator
 import anthropic
 from anthropic import AsyncAnthropic
 
-from agent.auth.credentials import OAUTH_BETA, Credential
+from agent.auth.credentials import ApiKey, Credential, OAUTH_BETA, OAuthToken
 from agent.events import ErrorEvent, Event
 from agent.providers.anthropic_raw import build_body
 from agent.providers.anthropic_wire import AnthropicTranslator
@@ -13,18 +13,20 @@ from agent.providers.base import EventFactory, ProviderRequest
 from agent.providers.errors import classify_http, classify_transport, to_event
 
 def _client_for(credential: Credential, timeout: float) -> AsyncAnthropic:
-    if credential.type == "api_key":
+    if isinstance(credential, ApiKey):
         return AsyncAnthropic(
             api_key=credential.value.get_secret_value(),
             max_retries=0,
             timeout=timeout,
         )
-    return AsyncAnthropic(
-        auth_token=credential.access_token.get_secret_value(),
-        default_headers={"anthropic-beta": OAUTH_BETA},
-        max_retries=0,
-        timeout=timeout,
-    )
+    if isinstance(credential, OAuthToken):
+        return AsyncAnthropic(
+            auth_token=credential.access_token.get_secret_value(),
+            default_headers={"anthropic-beta": OAUTH_BETA},
+            max_retries=0,
+            timeout=timeout,
+        )
+    raise ValueError("AnthropicSDKProvider requires an Anthropic credential")
 
 class AnthropicSDKProvider:
     name = "anthropic-sdk"

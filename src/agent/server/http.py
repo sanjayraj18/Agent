@@ -57,6 +57,7 @@ def create_http_app(session_service: SessionService) -> Any:
         payload: dict[str, Any],
     ) -> dict[str, dict[str, Any]]:
         workspace = payload.get("workspace")
+        provider = payload.get("provider", "anthropic")
         model = payload.get("model")
         title = payload.get("title")
 
@@ -70,6 +71,14 @@ def create_http_app(session_service: SessionService) -> Any:
                 status_code=422,
                 detail="model must be a non-empty string",
             )
+        if not isinstance(provider, str) or provider not in {
+            "anthropic",
+            "openai",
+        }:
+            raise fastapi.HTTPException(
+                status_code=422,
+                detail="provider must be anthropic or openai",
+            )
         if title is not None and not isinstance(title, str):
             raise fastapi.HTTPException(
                 status_code=422,
@@ -79,6 +88,7 @@ def create_http_app(session_service: SessionService) -> Any:
         try:
             session = await session_service.create_session(
                 workspace=Path(workspace),
+                provider=provider,
                 model=model,
                 title=title,
             )

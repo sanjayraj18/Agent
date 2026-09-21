@@ -57,6 +57,7 @@ class SessionStore:
         self,
         *,
         workspace: Path | str,
+        provider: str = "anthropic",
         model: str,
         title: str | None = None,
         session_id: str | None = None,
@@ -71,6 +72,7 @@ class SessionStore:
         record = SessionRecord(
             session_id=session_id or uuid4().hex,
             workspace=normalized_workspace,
+            provider=provider,
             model=model,
             title=title,
         )
@@ -91,6 +93,7 @@ class SessionStore:
                 SELECT
                     session_id,
                     workspace,
+                    provider,
                     model,
                     status,
                     title,
@@ -141,6 +144,7 @@ class SessionStore:
                 SELECT
                     session_id,
                     workspace,
+                    provider,
                     model,
                     status,
                     title,
@@ -300,6 +304,7 @@ class SessionStore:
         child = SessionRecord(
             session_id=child_id,
             workspace=parent.workspace,
+            provider=parent.provider,
             model=parent.model,
             status=SessionStatus.READY,
             title=title,
@@ -411,6 +416,7 @@ class SessionStore:
                 INSERT INTO sessions (
                     session_id,
                     workspace,
+                    provider,
                     model,
                     status,
                     title,
@@ -421,11 +427,12 @@ class SessionStore:
                     updated_at,
                     archived_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.session_id,
                     record.workspace,
+                    record.provider,
                     record.model,
                     record.status.value,
                     record.title,

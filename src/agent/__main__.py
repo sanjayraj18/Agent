@@ -15,8 +15,8 @@ from pydantic import SecretStr
 
 
 from agent import config, logs
-from agent.auth.credentials import ApiKey
-from agent.auth.resolver import CredentialError, resolve
+from agent.auth.credentials import ApiKey, Credential, OpenAIApiKey
+from agent.auth.resolver import CredentialError, resolve_for_provider
 from agent.auth.store import FileStore, StoreError
 from agent.core.costs import calculate_known_model_cost
 from agent.core.grants import GrantStoreError, ProjectGrantStore
@@ -24,8 +24,15 @@ from agent.core.loop import AgentLoop
 from agent.core.permission import PermissionPolicy
 from agent.core.telemetry import SessionTelemetry
 from agent.events import AssistantEnd, ErrorEvent, Event, SessionStarted,ContextCompacted, TextDelta, ThinkingDelta, ToolCallStart, Usage, UserMessage
-from agent.providers.anthropic_raw import AnthropicRawProvider
-from agent.providers.base import EventFactory, Message, ProviderRequest, TextPart
+from agent.providers.base import (
+    EventFactory,
+    Message,
+    Provider,
+    ProviderRequest,
+    TextPart,
+)
+from agent.providers.profiles import ProviderId, resolve_provider
+from agent.providers.registry import ProviderRegistryError, create_provider
 from agent.persistence.database import SqliteDatabase
 from agent.persistence.event_log import EventLog
 from agent.persistence.migrations import migrate
@@ -57,12 +64,6 @@ from agent.tools.write_file import WriteFileTool
 from agent.core.capabilities import capabilities_for_model
 
 
-PRICING = {
-    "claude-opus-5": (5.00, 25.00),
-    "claude-sonnet-5": (3.00, 15.00),
-    "claude-haiku-4-5": (1.00, 5.00),
-}
-
 def _log_context_compaction(event: ContextCompacted) -> None:
     logs.get("context").info(
         "context compacted",
@@ -77,18 +78,63 @@ def _log_context_compaction(event: ContextCompacted) -> None:
         },
     )
 
-def _cost(model: str, usage) -> float | None:
-    if model not in PRICING:
-        return None
-    inp, out = PRICING[model]
-    return (
-        usage.input_tokens * inp
-        + usage.cache_read_input_tokens * inp * 0.10
-        + usage.cache_creation_input_tokens * inp * 1.25
-        + usage.output_tokens * out
-    ) / 1_000_000
-
 DIM, RESET = "\033[2m", "\033[0m"
+
+
+def _provider_id(settings: dict) -> ProviderId:
+    """Resolve once at the boundary before we construct a wire adapter."""
+
+    provider = settings["provider"]
+    model = settings["model"]
+    if not isinstance(provider, str) or not isinstance(model, str):
+        raise ValueError("provider and model must be strings")
+    return resolve_provider(provider, model)
+
+
+def _credential_provider_id(settings: dict) -> ProviderId:
+    """Choose a credential namespace without requiring a runnable model.
+
+    `agent auth --provider openai login` must work even when the project's
+    default model is still Claude. Model/provider compatibility is enforced
+    later for `run` and `serve`, where a request will actually be sent.
+    """
+
+    provider = settings["provider"]
+    if provider == "anthropic":
+        return "anthropic"
+    if provider == "openai":
+        return "openai"
+    return _provider_id(settings)
+
+
+def _provider_base_url(settings: dict) -> str | None:
+    base_url = settings["provider_base_url"]
+    return base_url if isinstance(base_url, str) else None
+
+
+def _create_provider(
+    credential: Credential,
+    settings: dict,
+    *,
+    provider_id: ProviderId | None = None,
+) -> Provider:
+    return create_provider(
+        provider_id or _provider_id(settings),
+        credential,
+        base_url=_provider_base_url(settings),
+    )
+
+
+async def _close_provider(provider: Provider) -> None:
+    """Close transport-capable production adapters without enlarging Provider.
+
+    The minimal Provider protocol is intentionally stream-only so unit-test
+    fakes and alternative adapters do not need to own network resources.
+    """
+
+    close = getattr(provider, "aclose", None)
+    if close is not None:
+        await close()
 
 
 def _print_turn_telemetry(model: str, usage: Usage) -> None:
@@ -224,11 +270,11 @@ def _create_workspace_sandbox(
 
 async def _headless_run(
     prompt: str,
-    credential,
+    credential: Credential,
     settings: dict,
     approval_handler: ApprovalHandler | None = None,
 ) -> AsyncIterator[Event]:
-    provider = AnthropicRawProvider(credential)
+    provider = _create_provider(credential, settings)
     emit = EventFactory(session_id=uuid4().hex[:12])
 
     workspace = Workspace(Path.cwd())
@@ -360,11 +406,11 @@ async def _headless_run(
         await processes.close()
         if sandbox_temporary_directory is not None:
             sandbox_temporary_directory.cleanup()
-        await provider.aclose()
+        await _close_provider(provider)
 
 
 def _persistent_runner_factory(
-    credential,
+    credential: Credential,
     settings: dict,
 ) -> Callable[[SessionRecord, ApprovalHandler | None], AgentRunner]:
     """Build AgentLoop runners that continue a durable event history.
@@ -382,11 +428,44 @@ def _persistent_runner_factory(
             history: tuple[Event, ...],
             emit: EventFactory,
         ) -> AsyncIterator[Event]:
-            provider = AnthropicRawProvider(credential)
+            provider: Provider | None = None
             processes = ProcessRegistry()
             sandbox_temporary_directory = None
 
             try:
+                configured_provider = _provider_id(settings)
+                try:
+                    session_provider = resolve_provider(
+                        session.provider,
+                        session.model,
+                    )
+                except ValueError as exc:
+                    yield emit(
+                        ErrorEvent,
+                        kind="provider_configuration_error",
+                        message=str(exc),
+                        retryable=False,
+                    )
+                    return
+
+                if session_provider != configured_provider:
+                    yield emit(
+                        ErrorEvent,
+                        kind="provider_configuration_error",
+                        message=(
+                            "session was created with "
+                            f"{session.provider!r}, but this server is "
+                            f"configured for {configured_provider!r}"
+                        ),
+                        retryable=False,
+                    )
+                    return
+
+                provider = _create_provider(
+                    credential,
+                    settings,
+                    provider_id=session_provider,
+                )
                 workspace = Workspace(Path(session.workspace))
 
                 try:
@@ -467,7 +546,8 @@ def _persistent_runner_factory(
                 await processes.close()
                 if sandbox_temporary_directory is not None:
                     sandbox_temporary_directory.cleanup()
-                await provider.aclose()
+                if provider is not None:
+                    await _close_provider(provider)
 
         return run
 
@@ -512,7 +592,7 @@ def _create_session_service(
 
 
 async def _run(prompt: str, credential, settings: dict) -> int:
-    provider = AnthropicRawProvider(credential)
+    provider = _create_provider(credential, settings)
     request = ProviderRequest(
         model=settings["model"],
         max_tokens=settings["max_tokens"],
@@ -554,7 +634,7 @@ async def _run(prompt: str, credential, settings: dict) -> int:
                
         return 0
     finally:
-        await provider.aclose()
+        await _close_provider(provider)
 
 
 def main() -> None:
@@ -579,6 +659,11 @@ def main() -> None:
         "serve",
         help="run the durable JSON-RPC server over stdin/stdout",
     )
+    serve.add_argument(
+        "--provider",
+        choices=["anthropic", "openai", "auto"],
+    )
+    serve.add_argument("--provider-base-url")
     serve.add_argument( "--permission-mode",dest="permission_mode",choices=permission_modes)
     serve.add_argument("--model")
     serve.add_argument("--effort",choices=["low", "medium", "high", "xhigh", "max"])
@@ -603,6 +688,10 @@ def main() -> None:
     )
 
     auth = sub.add_parser("auth", help="credential commands")
+    auth.add_argument(
+        "--provider",
+        choices=["anthropic", "openai", "auto"],
+    )
     auth_sub = auth.add_subparsers(dest="auth_command", required=True)
     auth_sub.add_parser("status", help="show the active credential")
     auth_sub.add_parser("login", help="store a credential")
@@ -610,6 +699,11 @@ def main() -> None:
 
     run = sub.add_parser("run", help="send one prompt and stream the reply")
     run.add_argument("prompt")
+    run.add_argument(
+        "--provider",
+        choices=["anthropic", "openai", "auto"],
+    )
+    run.add_argument("--provider-base-url")
     run.add_argument("--model")
     run.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"])
     run.add_argument( "--permission-mode", dest="permission_mode", choices=permission_modes,)
@@ -630,6 +724,12 @@ def main() -> None:
         resolved_config = config.load(
             Path.cwd(),
             {
+                "provider": getattr(args, "provider", None),
+                "provider_base_url": getattr(
+                    args,
+                    "provider_base_url",
+                    None,
+                ),
                 "model": getattr(args, "model", None),
                 "effort": getattr(args, "effort", None),
                 "permission_mode": getattr(args, "permission_mode", None),
@@ -676,27 +776,45 @@ def main() -> None:
         run_tui()
         return
 
+    try:
+        selected_provider = (
+            _credential_provider_id(settings)
+            if args.command == "auth"
+            else _provider_id(settings)
+        )
+    except ValueError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+
     store = FileStore()
 
     # login/logout must come BEFORE resolve() — neither needs an existing
     # credential, and login exists precisely for when there isn't one.
     if args.command == "auth" and args.auth_command == "login":
-        raw = getpass("Anthropic API key: ").strip()
+        label = "OpenAI" if selected_provider == "openai" else "Anthropic"
+        raw = getpass(f"{label} API key: ").strip()
         if not raw:
             print("aborted: no key entered", file=sys.stderr)
             raise SystemExit(1)
-        credential = ApiKey(value=SecretStr(raw))
-        store.save(credential)
+        credential: Credential
+        if selected_provider == "openai":
+            credential = OpenAIApiKey(value=SecretStr(raw))
+        else:
+            credential = ApiKey(value=SecretStr(raw))
+        store.save(credential, provider=selected_provider)
         print(f"saved {credential.describe()} to {store.path}")
         return
 
     if args.command == "auth" and args.auth_command == "logout":
-        print("removed stored credential" if store.delete() else "nothing stored")
+        removed = store.delete_for_provider(selected_provider)
+        print("removed stored credential" if removed else "nothing stored")
         return
 
     try:
-        resolved_credential = resolve(
-            api_key=getattr(args, "api_key", None), store=store.load
+        resolved_credential = resolve_for_provider(
+            selected_provider,
+            api_key=getattr(args, "api_key", None),
+            store=lambda: store.load_for_provider(selected_provider),
         )
     except (CredentialError, StoreError) as exc:
         print(f"auth error: {exc}", file=sys.stderr)
@@ -715,6 +833,7 @@ def main() -> None:
             session_service=session_service,
             default_workspace=Path.cwd(),
             default_model=settings["model"],
+            default_provider=selected_provider,
         )
 
         if args.unix_socket is not None:

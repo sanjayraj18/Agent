@@ -38,6 +38,9 @@ class SessionRecord(BaseModel):
 
     session_id: str = Field(min_length=1)
     workspace: str = Field(min_length=1)
+    # Store the provider alongside the model: a resumed conversation must use
+    # the same wire protocol that produced its historical tool calls/events.
+    provider: str = Field(default="anthropic", min_length=1)
     model: str = Field(min_length=1)
     status: SessionStatus = SessionStatus.READY
 
@@ -69,6 +72,14 @@ class SessionRecord(BaseModel):
         if not normalized:
             raise ValueError("title must not be blank")
 
+        return normalized
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"anthropic", "openai"}:
+            raise ValueError("provider must be anthropic or openai")
         return normalized
 
     @field_validator("parent_session_id")

@@ -17,7 +17,9 @@ def test_first_migration_creates_the_session_schema(tmp_path):
 
     assert result.previous_version == 0
     assert result.current_version == LATEST_SCHEMA_VERSION
-    assert result.applied_versions == (1,)
+    assert result.applied_versions == tuple(
+        range(1, LATEST_SCHEMA_VERSION + 1)
+    )
 
     with database.connection() as connection:
         tables = {

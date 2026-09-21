@@ -104,6 +104,54 @@ MODEL_CAPABILITIES: Mapping[str, ModelCapabilities] = MappingProxyType(
             supports_thinking=True,
             supports_tools=True,
         ),
+        # OpenAI Responses models. Keeping their hard limits and prices in the
+        # same catalog is what lets the context planner and telemetry remain
+        # provider-neutral.
+        "gpt-5.6-sol": ModelCapabilities(
+            model="gpt-5.6-sol",
+            context_window_tokens=1_050_000,
+            max_output_tokens=128_000,
+            pricing=ModelPricing(
+                input_per_million=Decimal("4.00"),
+                output_per_million=Decimal("20.00"),
+                cache_read_per_million=Decimal("0.40"),
+                # Responses reports cached reads, not a separate cache-write
+                # token charge, so an invented cache-creation cost would be
+                # misleading.
+                cache_creation_per_million=Decimal("0"),
+            ),
+            supports_prompt_caching=True,
+            supports_thinking=True,
+            supports_tools=True,
+        ),
+        "gpt-5.6-terra": ModelCapabilities(
+            model="gpt-5.6-terra",
+            context_window_tokens=1_050_000,
+            max_output_tokens=128_000,
+            pricing=ModelPricing(
+                input_per_million=Decimal("2.00"),
+                output_per_million=Decimal("12.00"),
+                cache_read_per_million=Decimal("0.20"),
+                cache_creation_per_million=Decimal("0"),
+            ),
+            supports_prompt_caching=True,
+            supports_thinking=True,
+            supports_tools=True,
+        ),
+        "gpt-5.6-luna": ModelCapabilities(
+            model="gpt-5.6-luna",
+            context_window_tokens=1_050_000,
+            max_output_tokens=128_000,
+            pricing=ModelPricing(
+                input_per_million=Decimal("0.20"),
+                output_per_million=Decimal("1.20"),
+                cache_read_per_million=Decimal("0.02"),
+                cache_creation_per_million=Decimal("0"),
+            ),
+            supports_prompt_caching=True,
+            supports_thinking=True,
+            supports_tools=True,
+        ),
     }
 )
 

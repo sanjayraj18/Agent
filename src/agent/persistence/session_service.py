@@ -47,6 +47,7 @@ class SessionService:
         self,
         *,
         workspace: Path | str,
+        provider: str = "anthropic",
         model: str,
         title: str | None = None,
     ) -> SessionRecord:
@@ -55,6 +56,7 @@ class SessionService:
         return await asyncio.to_thread(
             self._sessions.create,
             workspace=workspace,
+            provider=provider,
             model=model,
             title=title,
         )

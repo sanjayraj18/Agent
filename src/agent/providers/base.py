@@ -18,6 +18,15 @@ from agent.core.prompt_cache import PromptCachePlan, PromptSection
 from agent.events import Event, EventBase
 
 
+class ProviderMetadata(BaseModel):
+    """Provider identity kept separate from model-specific capabilities."""
+
+    model_config = ConfigDict(frozen=True)
+
+    provider_id: str = Field(min_length=1)
+    base_url: str = Field(min_length=1)
+
+
 class TextPart(BaseModel):
     model_config = ConfigDict(frozen=True)
 
