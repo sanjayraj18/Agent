@@ -14,6 +14,7 @@ from pydantic import (
 )
 
 DEFAULT_SKEW_SECONDS=60.0
+
 OAUTH_BETA = "oauth-2025-04-20"
 
 
