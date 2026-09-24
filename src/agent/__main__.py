@@ -161,11 +161,13 @@ def _print_turn_telemetry(model: str, usage: Usage) -> None:
 
 
 def _log_live_telemetry(telemetry: SessionTelemetry) -> None:
-    """Write Phase 5 telemetry to stderr-safe structured logs."""
+    """Write completed LLM-turn telemetry to stderr-safe structured logs."""
+
     if not telemetry.turns:
         return
 
     turn = telemetry.turns[-1]
+    timing = turn.timing
 
     logs.get("telemetry").info(
         "LLM turn complete",
@@ -190,6 +192,22 @@ def _log_live_telemetry(telemetry: SessionTelemetry) -> None:
             ),
             "cache_hit_rate": str(telemetry.cache_hit_rate),
             "cache_prefix_changed": telemetry.cache_prefix_changed,
+            "provider_duration_seconds": (
+                str(timing.provider_duration_seconds)
+                if timing is not None
+                else None
+            ),
+            "time_to_first_output_seconds": (
+                str(timing.time_to_first_output_seconds)
+                if (timing is not None and timing.time_to_first_output_seconds is not None)
+                else None
+            ),
+            "timed_turn_count": telemetry.timed_turn_count,
+            "session_provider_duration_seconds": (
+                str(telemetry.total_provider_duration_seconds)
+                if telemetry.total_provider_duration_seconds is not None
+                else None
+            ),
         },
     )
 

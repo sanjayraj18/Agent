@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from agent.core.telemetry import SessionTelemetry
+from agent.core.telemetry import SessionTelemetry, TurnTiming
 from agent.events import Usage
 
 
@@ -130,4 +130,78 @@ def test_rejects_an_empty_model_name():
         telemetry.record_turn(
             model="",
             usage=Usage(),
+        )
+
+def test_records_timing_for_a_completed_turn():
+    telemetry = SessionTelemetry()
+
+    turn = telemetry.record_turn(
+        model="claude-sonnet-5",
+        usage=Usage(input_tokens=100, output_tokens=50),
+        timing=TurnTiming(
+            provider_duration_seconds=Decimal("2.50"),
+            time_to_first_output_seconds=Decimal("0.75"),
+        ),
+    )
+
+    assert turn.timing is not None
+    assert turn.timing.provider_duration_seconds == Decimal("2.50")
+    assert turn.timing.time_to_first_output_seconds == Decimal("0.75")
+    assert telemetry.timed_turn_count == 1
+    assert telemetry.unmeasured_turn_count == 0
+    assert telemetry.known_total_provider_duration_seconds == Decimal(
+        "2.50"
+    )
+    assert telemetry.total_provider_duration_seconds == Decimal("2.50")
+
+
+def test_marks_session_timing_unknown_when_a_turn_was_not_measured():
+    telemetry = SessionTelemetry()
+
+    telemetry.record_turn(
+        model="claude-sonnet-5",
+        usage=Usage(),
+        timing=TurnTiming(
+            provider_duration_seconds=Decimal("1.25"),
+        ),
+    )
+    telemetry.record_turn(
+        model="claude-sonnet-5",
+        usage=Usage(),
+    )
+
+    assert telemetry.timed_turn_count == 1
+    assert telemetry.unmeasured_turn_count == 1
+    assert telemetry.known_total_provider_duration_seconds == Decimal(
+        "1.25"
+    )
+    assert telemetry.total_provider_duration_seconds is None
+
+
+def test_allows_a_turn_with_no_streamed_output():
+    timing = TurnTiming(
+        provider_duration_seconds=Decimal("0.50"),
+    )
+
+    assert timing.time_to_first_output_seconds is None
+
+
+def test_rejects_negative_provider_duration():
+    with pytest.raises(
+        ValueError,
+        match="provider_duration_seconds must not be negative",
+    ):
+        TurnTiming(
+            provider_duration_seconds=Decimal("-0.01"),
+        )
+
+
+def test_rejects_first_output_after_turn_completion():
+    with pytest.raises(
+        ValueError,
+        match="cannot exceed provider_duration_seconds",
+    ):
+        TurnTiming(
+            provider_duration_seconds=Decimal("1.00"),
+            time_to_first_output_seconds=Decimal("1.01"),
         )

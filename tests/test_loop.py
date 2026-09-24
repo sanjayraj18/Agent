@@ -20,6 +20,7 @@ from agent.providers.base import (
     ToolResultPart,
     ToolUsePart,
 )
+from decimal import Decimal
 from agent.tools.base import Tool, ToolExecutionResult
 from agent.tools.registry import ToolRegistry
 
@@ -44,6 +45,38 @@ class AddNumbersTool(Tool):
         return ToolExecutionResult(
             content=str(arguments["left"] + arguments["right"])
         )
+
+
+class TimingProvider:
+    """Streams one visible text response for latency measurement tests."""
+
+    name = "timing"
+
+    async def stream(
+        self,
+        request: ProviderRequest,
+        emit: EventFactory,
+    ):
+        yield emit(AssistantStart)
+        yield emit(TextDelta, index=0, text="Measured response.")
+        yield emit(
+            AssistantEnd,
+            stop_reason="end_turn",
+            usage=Usage(input_tokens=10, output_tokens=5),
+        )
+
+
+class FixedClock:
+    """Returns predetermined monotonic times instead of real time."""
+
+    def __init__(self, values: tuple[float, ...]) -> None:
+        self._values = iter(values)
+
+    def __call__(self) -> float:
+        try:
+            return next(self._values)
+        except StopIteration as exc:
+            raise AssertionError("clock was called too many times") from exc
 
 
 class AddThenAnswerProvider:
@@ -318,3 +351,32 @@ async def test_loop_reports_a_provider_that_ends_without_assistant_end():
     assert isinstance(events[-1], ErrorEvent)
     assert events[-1].kind == "provider_protocol_error"
     assert events[-1].retryable is False
+
+
+async def test_loop_records_provider_turn_timing():
+    emit = EventFactory("session-1")
+
+    clock = FixedClock((100.00, 100.25, 101.75))
+
+    loop = AgentLoop(
+        provider=TimingProvider(),
+        request_template=_request_template(),
+        registry=ToolRegistry(),
+        monotonic_clock=clock,
+    )
+
+    events = [
+        event
+        async for event in loop.run(
+            _initial_events(emit),
+            emit,
+        )
+    ]
+
+    assert events[-1].type == "assistant.end"
+
+    turn = loop.telemetry.turns[0]
+
+    assert turn.timing is not None
+    assert turn.timing.provider_duration_seconds == Decimal("1.75")
+    assert turn.timing.time_to_first_output_seconds == Decimal("0.25")

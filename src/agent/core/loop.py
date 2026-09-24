@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
-from typing import AsyncIterator, Literal, Sequence, cast
+from decimal import Decimal
+from typing import AsyncIterator, Callable, Literal, Sequence, cast
 
 from agent.core.capabilities import (
     ModelCapabilities,
@@ -33,7 +35,7 @@ from agent.core.ledger import (
 )
 from agent.core.permission import PermissionPolicy
 from agent.core.retry import RetryPolicy
-from agent.core.telemetry import SessionTelemetry
+from agent.core.telemetry import SessionTelemetry, TurnTiming
 from agent.events import (
     AssistantEnd,
     ContextCompacted,
@@ -42,6 +44,8 @@ from agent.events import (
     ToolCallEnd,
     ToolCallStart,
     ToolResult,
+    TextDelta,
+    ThinkingDelta,
     UserMessage,
 )
 from agent.providers.base import (
@@ -88,6 +92,8 @@ class AgentLoop:
         compaction_reserve_tokens: int = (
             DEFAULT_COMPACTION_RESERVE_TOKENS
         ),
+        monotonic_clock: Callable[[], float] = time.perf_counter,
+
     ) -> None:
         if max_iterations < 1:
             raise ValueError("max_iterations must be at least 1")
@@ -131,6 +137,7 @@ class AgentLoop:
             context_safety_margin_tokens
         )
         self._compaction_reserve_tokens = compaction_reserve_tokens
+        self._monotonic_clock = monotonic_clock
 
         if context_compactor is not None:
             self._context_compactor = context_compactor
@@ -278,8 +285,18 @@ class AgentLoop:
                 assistant_end = None
                 provider_error: ErrorEvent | None = None
 
+                stream_started_at = self._monotonic_clock()
+                first_output_at: float | None = None
+                stream_finished_at: float | None = None
+
                 async for event in self._provider.stream(request, emit):
                     history.append(event)
+                    if (first_output_at is None and isinstance(event,(TextDelta,ThinkingDelta,ToolCallStart))):
+                        first_output_at = self._monotonic_clock()
+
+                    if isinstance(event, AssistantEnd):
+                        stream_finished_at = self._monotonic_clock()
+                    
                     yield event
 
                     if isinstance(event, ToolCallStart):
@@ -299,11 +316,22 @@ class AgentLoop:
 
                     elif isinstance(event, AssistantEnd):
                         assistant_end = event
+
+                        if stream_finished_at is None:
+                            raise RuntimeError( "assistant.end is missing stream timing")
+                        
                         self._telemetry.record_turn(
                             model=request.model,
                             usage=event.usage,
                             stable_prefix_fingerprint=(
                                 stable_prefix_fingerprint
+                            ),
+                            timing=TurnTiming(
+                                provider_duration_seconds=Decimal(str(stream_finished_at - stream_started_at)),
+                                time_to_first_output_seconds=(None
+                                    if first_output_at is None
+                                    else Decimal(str(first_output_at - stream_started_at))
+                                ),
                             ),
                         )
 

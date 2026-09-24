@@ -14,6 +14,48 @@ from agent.events import Usage
 
 
 ZERO_DOLLARS = Decimal("0")
+ZERO_SECONDS = Decimal("0")
+
+
+@dataclass(frozen=True, slots=True)
+class TurnTiming:
+
+    """
+    Latency measured around one completed provider stream.
+
+    ``provider_duration_seconds`` starts immediately before the provider call
+    and ends when ``assistant.end`` arrives.
+
+    ``time_to_first_output_seconds`` is optional because a provider might end
+    without streaming text, thinking, or a tool call.
+    """
+
+    provider_duration_seconds: Decimal
+    time_to_first_output_seconds: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        if self.provider_duration_seconds < ZERO_SECONDS:
+            raise ValueError(
+                "provider_duration_seconds must not be negative"
+            )
+
+        if (
+            self.time_to_first_output_seconds is not None
+            and self.time_to_first_output_seconds < ZERO_SECONDS
+        ):
+            raise ValueError(
+                "time_to_first_output_seconds must not be negative"
+            )
+
+        if (
+            self.time_to_first_output_seconds is not None
+            and self.time_to_first_output_seconds
+            > self.provider_duration_seconds
+        ):
+            raise ValueError(
+                "time_to_first_output_seconds cannot exceed "
+                "provider_duration_seconds"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +67,7 @@ class TurnTelemetry:
     usage: Usage
     cost: TurnCost | None
     stable_prefix_fingerprint: str | None = None
+    timing: TurnTiming | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -68,6 +111,7 @@ class SessionTelemetry:
         model: str,
         usage: Usage,
         stable_prefix_fingerprint: str | None = None,
+        timing: TurnTiming | None = None,
     ) -> TurnTelemetry:
         if not model:
             raise ValueError("model must not be empty")
@@ -84,6 +128,7 @@ class SessionTelemetry:
             usage=usage,
             cost=cost,
             stable_prefix_fingerprint=stable_prefix_fingerprint,
+            timing=timing
         )
         self._turns.append(turn)
         return turn
@@ -139,6 +184,48 @@ class SessionTelemetry:
             return None
 
         return self.known_total_cost_usd
+
+    @property
+    def timed_turn_count(self) -> int:
+        """Number of completed turns for which latency was measured."""
+
+        return sum(
+            1
+            for turn in self._turns
+            if turn.timing is not None
+        )
+
+    @property
+    def unmeasured_turn_count(self) -> int:
+        """Number of completed turns missing latency data."""
+
+        return len(self._turns) - self.timed_turn_count
+
+
+    @property
+    def known_total_provider_duration_seconds(self) -> Decimal:
+        """Sum timing only for turns that were actually measured."""
+
+        return sum(
+            (
+                turn.timing.provider_duration_seconds
+                for turn in self._turns
+                if turn.timing is not None
+            ),
+            start=ZERO_SECONDS,
+        )
+
+    @property
+    def total_provider_duration_seconds(self) -> Decimal | None:
+        """
+        Total LLM-provider time, or ``None`` if any completed turn is missing
+        a timing measurement.
+        """
+
+        if self.unmeasured_turn_count:
+            return None
+
+        return self.known_total_provider_duration_seconds
 
     @property
     def cache_hit_rate(self) -> Decimal:
