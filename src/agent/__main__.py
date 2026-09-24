@@ -15,6 +15,7 @@ from pydantic import SecretStr
 
 
 from agent import config, logs
+from agent.routing.catalog import DEFAULT_ROUTE_CATALOG, RouteNotFoundError
 from agent.auth.credentials import ApiKey, Credential, OpenAIApiKey
 from agent.auth.resolver import CredentialError, resolve_for_provider
 from agent.auth.store import FileStore, StoreError
@@ -737,6 +738,14 @@ def main() -> None:
     bench_run.add_argument("--provider-base-url")
     bench_run.add_argument("--model")
     bench_run.add_argument(
+        "--route",
+        dest="route_id",
+        help=(
+            "approved Rung 2 route ID; overrides --provider, --model, "
+            "and --effort for this benchmark"
+        ),
+    )
+    bench_run.add_argument(
         "--effort",
         choices=["low", "medium", "high", "xhigh", "max"],
     )
@@ -823,19 +832,58 @@ def main() -> None:
     run.add_argument("--api-key", dest="api_key")
 
     args = parser.parse_args()
+    selected_route = None
+
+    if (
+        args.command == "bench"
+        and args.bench_command == "run"
+        and args.route_id is not None
+    ):
+        try:
+            selected_route = DEFAULT_ROUTE_CATALOG.require(
+                args.route_id
+            )
+        except RouteNotFoundError as exc:
+            parser.error(str(exc))
+
+        for setting_name, supplied_value, route_value in (
+            ("provider", args.provider, selected_route.provider),
+            ("model", args.model, selected_route.model),
+            ("effort", args.effort, selected_route.effort),
+        ):
+            if (
+                supplied_value is not None
+                and supplied_value != route_value
+            ):
+                parser.error(
+                    f"--{setting_name} conflicts with route "
+                    f"{selected_route.route_id!r}"
+                )
 
     try:
         resolved_config = config.load(
             Path.cwd(),
             {
-                "provider": getattr(args, "provider", None),
+                "provider": (
+                    selected_route.provider
+                    if selected_route is not None
+                    else getattr(args, "provider", None)
+                ),
                 "provider_base_url": getattr(
                     args,
                     "provider_base_url",
                     None,
                 ),
-                "model": getattr(args, "model", None),
-                "effort": getattr(args, "effort", None),
+                "model": (
+                    selected_route.model
+                    if selected_route is not None
+                    else getattr(args, "model", None)
+                ),
+                "effort": (
+                    selected_route.effort
+                    if selected_route is not None
+                    else getattr(args, "effort", None)
+                ),
                 "permission_mode": getattr(args, "permission_mode", None),
                 "sandbox_mode": getattr(
                     args,
@@ -1007,6 +1055,11 @@ def main() -> None:
                     task_id=args.task_id,
                     provider=selected_provider,
                     model=settings["model"],
+                    route_id=(
+                        selected_route.route_id
+                        if selected_route is not None
+                        else "unrouted"
+                    ),
                     container_image=args.container_image,
                     attempts=settings["benchmark_attempts"],
                     parallelism=settings["benchmark_parallelism"],

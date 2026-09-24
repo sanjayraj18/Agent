@@ -51,9 +51,9 @@ def render_markdown(rows: tuple[ScoreboardRow, ...]) -> str:
     lines = [
         "# Agent benchmark scoreboard",
         "",
-        "| Task | Provider / model | Runs | Passed | Pass rate | "
+        "| Task | Route | Provider / model | Runs | Passed | Pass rate | "
         "Mean cost | Mean tokens | Mean turns | Mean duration |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     for row in rows:
@@ -61,6 +61,7 @@ def render_markdown(rows: tuple[ScoreboardRow, ...]) -> str:
         lines.append(
             "| "
             f"{row.task_id} | {row.provider} / {row.model} | "
+            f"{row.provider} / {row.model} | "
             f"{row.attempts} | {row.passed_attempts} | "
             f"{row.pass_rate:.2%} | {cost} | "
             f"{row.mean_tokens:.0f} | {row.mean_turns:.2f} | "

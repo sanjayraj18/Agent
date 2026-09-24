@@ -41,6 +41,7 @@ async def run_benchmark(
     parallelism: int,
     agent_settings: dict[str, Any],
     agent_attempt: AgentAttempt,
+    route_id: str = "unrouted",
     keep_workspaces: bool = False,
 ) -> BenchmarkExecution:
     """Run one catalog task repeatedly and preserve its evidence."""
@@ -55,6 +56,7 @@ async def run_benchmark(
     config = BenchmarkRunConfig(
         provider=provider,
         model=model,
+        route_id=route_id,
         agent_revision=provenance.revision,
         container_image=container_image,
         attempts=attempts,

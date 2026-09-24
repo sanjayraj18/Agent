@@ -51,6 +51,7 @@ def build_scoreboard_row(
         task_id=attempts[0].task_id,
         provider=config.provider,
         model=config.model,
+        route_id=config.route_id,
         agent_revision=config.agent_revision,
         container_image=config.container_image,
         config_fingerprint=config.fingerprint,

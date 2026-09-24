@@ -136,6 +136,12 @@ class BenchmarkRunConfig(BaseModel):
     provider: str = Field(pattern=r"^(anthropic|openai)$")
     model: str = Field(min_length=1)
 
+    route_id: str = Field(
+        default="unrouted",
+        min_length=1,
+        pattern=r"^[a-z][a-z0-9-]*$",
+    )
+
     # Git commit of this agent implementation being measured.
     agent_revision: str = Field(min_length=7, max_length=64)
 
@@ -359,6 +365,13 @@ class ScoreboardRow(BaseModel):
     task_id: str = Field(min_length=3)
     provider: str = Field(pattern=r"^(anthropic|openai)$")
     model: str = Field(min_length=1)
+
+    route_id: str = Field(
+        default="unrouted",
+        min_length=1,
+        pattern=r"^[a-z][a-z0-9-]*$",
+    )
+    
     agent_revision: str = Field(min_length=7)
     container_image: str = Field(min_length=1)
     config_fingerprint: str = Field(min_length=64, max_length=64)
