@@ -2,7 +2,12 @@ from decimal import Decimal
 
 import pytest
 
-from agent.core.telemetry import SessionTelemetry, ShadowRouteRecommendation, TurnTiming
+from agent.core.telemetry import (
+    ExecutedRoute,
+    SessionTelemetry,
+    ShadowRouteRecommendation,
+    TurnTiming,
+)
 from agent.events import Usage
 
 
@@ -253,4 +258,42 @@ def test_rejects_a_shadow_route_with_a_blank_route_id():
             provider="openai",
             model="gpt-5.6-luna",
             reasons=("simple task",),
+        )
+
+
+def test_records_an_executed_live_route():
+    telemetry = SessionTelemetry()
+
+    turn = telemetry.record_turn(
+        model="gpt-5.6-luna",
+        usage=Usage(),
+        executed_route=ExecutedRoute(
+            route_id="economy-luna-medium",
+            provider="openai",
+            model="gpt-5.6-luna",
+            reasons=("simple task with no failure evidence",),
+        ),
+    )
+
+    assert turn.executed_route is not None
+    assert turn.executed_route.route_id == "economy-luna-medium"
+    assert telemetry.executed_route_count == 1
+
+
+def test_rejects_executed_route_metadata_for_a_different_model():
+    telemetry = SessionTelemetry()
+
+    with pytest.raises(
+        ValueError,
+        match="executed_route.model must match the executed model",
+    ):
+        telemetry.record_turn(
+            model="gpt-5.6-terra",
+            usage=Usage(),
+            executed_route=ExecutedRoute(
+                route_id="economy-luna-medium",
+                provider="openai",
+                model="gpt-5.6-luna",
+                reasons=("simple task with no failure evidence",),
+            ),
         )

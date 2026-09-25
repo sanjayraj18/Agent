@@ -90,6 +90,32 @@ class ShadowRouteRecommendation:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutedRoute:
+    """An approved route that was actually used for one provider turn."""
+
+    route_id: str
+    provider: str
+    model: str
+    reasons: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.route_id.strip():
+            raise ValueError("route_id must not be blank")
+
+        if not self.provider.strip():
+            raise ValueError("provider must not be blank")
+
+        if not self.model.strip():
+            raise ValueError("model must not be blank")
+
+        if not self.reasons:
+            raise ValueError("reasons must not be empty")
+
+        if any(not reason.strip() for reason in self.reasons):
+            raise ValueError("reasons must not contain blank text")
+
+
+@dataclass(frozen=True, slots=True)
 class TurnTelemetry:
     """Usage and cost information from one completed LLM turn."""
 
@@ -99,6 +125,7 @@ class TurnTelemetry:
     cost: TurnCost | None
     stable_prefix_fingerprint: str | None = None
     shadow_route: ShadowRouteRecommendation | None = None
+    executed_route: ExecutedRoute | None = None
     timing: TurnTiming | None = None
 
     @property
@@ -144,10 +171,19 @@ class SessionTelemetry:
         usage: Usage,
         stable_prefix_fingerprint: str | None = None,
         shadow_route: ShadowRouteRecommendation | None = None,
+        executed_route: ExecutedRoute | None = None,
         timing: TurnTiming | None = None,
     ) -> TurnTelemetry:
         if not model:
             raise ValueError("model must not be empty")
+
+        if (
+            executed_route is not None
+            and executed_route.model != model
+        ):
+            raise ValueError(
+                "executed_route.model must match the executed model"
+            )
 
         cost = calculate_known_model_cost(
             model,
@@ -162,6 +198,7 @@ class SessionTelemetry:
             cost=cost,
             stable_prefix_fingerprint=stable_prefix_fingerprint,
             shadow_route=shadow_route,
+            executed_route=executed_route,
             timing=timing
         )
         self._turns.append(turn)
@@ -302,6 +339,16 @@ class SessionTelemetry:
                 turn.shadow_route is not None
                 and turn.shadow_route.model != turn.model
             )
+        )
+
+    @property
+    def executed_route_count(self) -> int:
+        """Number of completed turns that used an approved live route."""
+
+        return sum(
+            1
+            for turn in self._turns
+            if turn.executed_route is not None
         )
 
     @property

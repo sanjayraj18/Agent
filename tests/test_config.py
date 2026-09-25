@@ -161,12 +161,21 @@ def test_routing_mode_can_be_enabled_for_shadow_observation(isolated):
     assert resolved["routing_mode"].origin == "AGENT_ROUTING_MODE"
 
 
+def test_routing_mode_can_be_enabled_for_live_execution(isolated):
+    resolved = config.load(
+        isolated,
+        env={"AGENT_ROUTING_MODE": "live"},
+    )
+
+    assert resolved["routing_mode"].value == "live"
+
+
 def test_rejects_an_unknown_routing_mode(isolated):
     with pytest.raises(
         ConfigError,
-        match="routing_mode must be one of: off, shadow",
+        match="routing_mode must be one of: live, off, shadow",
     ):
         config.load(
             isolated,
-            env={"AGENT_ROUTING_MODE": "live"},
+            env={"AGENT_ROUTING_MODE": "adaptive"},
         )

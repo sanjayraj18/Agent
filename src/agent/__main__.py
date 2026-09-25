@@ -39,6 +39,7 @@ from agent.persistence.event_log import EventLog
 from agent.persistence.migrations import migrate
 from agent.persistence.models import SessionRecord
 from agent.persistence.sessions import SessionStore
+from agent.routing.live import LiveRouteController
 from agent.routing.router import RuleBasedRouter
 from agent.sandbox import (
     SandboxBackend,
@@ -171,6 +172,7 @@ def _log_live_telemetry(telemetry: SessionTelemetry) -> None:
     turn = telemetry.turns[-1]
     timing = turn.timing
     shadow_route = turn.shadow_route
+    executed_route = turn.executed_route
 
     logs.get("telemetry").info(
         "LLM turn complete",
@@ -241,6 +243,27 @@ def _log_live_telemetry(telemetry: SessionTelemetry) -> None:
             "shadow_model_difference_count": (
                 telemetry.shadow_model_difference_count
             ),
+            "executed_route_id": (
+                executed_route.route_id
+                if executed_route is not None
+                else None
+            ),
+            "executed_route_provider": (
+                executed_route.provider
+                if executed_route is not None
+                else None
+            ),
+            "executed_route_model": (
+                executed_route.model
+                if executed_route is not None
+                else None
+            ),
+            "executed_route_reasons": (
+                list(executed_route.reasons)
+                if executed_route is not None
+                else []
+            ),
+            "executed_route_count": telemetry.executed_route_count,
         },
     )
 
@@ -323,16 +346,22 @@ def _create_shadow_router(
 ) -> RuleBasedRouter | None:
     """Create a recommendation-only router when shadow mode is enabled."""
 
-    routing_mode = settings["routing_mode"]
-
-    if routing_mode == "off":
-        return None
-
-    if routing_mode == "shadow":
+    if settings["routing_mode"] == "shadow":
         return RuleBasedRouter()
 
-    raise ValueError(
-        f"unsupported routing_mode: {routing_mode!r}"
+    return None
+
+
+def _create_live_router(
+    settings: dict,
+) -> LiveRouteController | None:
+    """Create the guarded same-provider controller for live mode."""
+
+    if settings["routing_mode"] != "live":
+        return None
+
+    return LiveRouteController(
+        active_provider=_provider_id(settings),
     )
 
 
@@ -454,6 +483,7 @@ async def _headless_run(
                 ]
             ),
             shadow_router=_create_shadow_router(settings),
+            live_router=_create_live_router(settings),
             permissions=permissions,
             approval_handler=approval_handler,
         )
@@ -605,6 +635,7 @@ def _persistent_runner_factory(
                     permissions=permissions,
                     approval_handler=approval_handler,
                     shadow_router=_create_shadow_router(settings),
+                    live_router=_create_live_router(settings),
                 )
 
                 async for event in loop.run(history, emit):
@@ -728,6 +759,7 @@ def main() -> None:
     routing_modes = [
         "off",
         "shadow",
+        "live",
     ]
 
     sub.add_parser("config", help="show resolved settings and where they came from")

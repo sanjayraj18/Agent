@@ -21,6 +21,7 @@ from agent.providers.base import (
     ToolUsePart,
 )
 from decimal import Decimal
+from agent.routing.live import LiveRouteController
 from agent.routing.router import RuleBasedRouter
 from agent.tools.base import Tool, ToolExecutionResult
 from agent.tools.registry import ToolRegistry
@@ -53,11 +54,15 @@ class TimingProvider:
 
     name = "timing"
 
+    def __init__(self) -> None:
+        self.requests: list[ProviderRequest] = []
+
     async def stream(
         self,
         request: ProviderRequest,
         emit: EventFactory,
     ):
+        self.requests.append(request)
         yield emit(AssistantStart)
         yield emit(TextDelta, index=0, text="Measured response.")
         yield emit(
@@ -421,3 +426,39 @@ async def test_shadow_routing_records_a_recommendation_without_changing_model():
     ]
     assert loop.telemetry.shadow_routed_turn_count == 2
     assert loop.telemetry.shadow_model_difference_count == 2
+
+
+async def test_live_routing_changes_the_request_model_and_records_the_route():
+    emit = EventFactory("session-1")
+    provider = TimingProvider()
+
+    loop = AgentLoop(
+        provider=provider,
+        request_template=_request_template(),
+        registry=ToolRegistry(),
+        live_router=LiveRouteController(active_provider="openai"),
+    )
+
+    events = [
+        event
+        async for event in loop.run(
+            [
+                emit(
+                    UserMessage,
+                    text="Fix the spelling typo in README.md",
+                )
+            ],
+            emit,
+        )
+    ]
+
+    assert events[-1].type == "assistant.end"
+    assert [request.model for request in provider.requests] == [
+        "gpt-5.6-luna"
+    ]
+    assert provider.requests[0].effort == "medium"
+
+    turn = loop.telemetry.turns[0]
+    assert turn.shadow_route is None
+    assert turn.executed_route is not None
+    assert turn.executed_route.route_id == "economy-luna-medium"

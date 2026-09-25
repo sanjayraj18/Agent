@@ -23,6 +23,7 @@ _SANDBOX_MODES = {
 _ROUTING_MODES = {
     "off",
     "shadow",
+    "live",
 }
 
 DEFAULTS: dict[str, Any] = {

@@ -36,6 +36,7 @@ from agent.core.ledger import (
 from agent.core.permission import PermissionPolicy
 from agent.core.retry import RetryPolicy
 from agent.core.telemetry import (
+    ExecutedRoute,
     SessionTelemetry,
     ShadowRouteRecommendation,
     TurnTiming,
@@ -60,6 +61,7 @@ from agent.providers.base import (
     ToolResultPart,
     ToolUsePart,
 )
+from agent.routing.live import LiveRouteController, LiveRouteResult
 from agent.routing.router import RuleBasedRouter
 from agent.routing.state import RoutingState
 from agent.tools.dispatcher import ApprovalHandler, ToolDispatcher
@@ -93,6 +95,7 @@ class AgentLoop:
         model_capabilities: ModelCapabilities | None = None,
         token_counter: TokenCounter | None = None,
         shadow_router: RuleBasedRouter | None = None,
+        live_router: LiveRouteController | None = None,
         context_safety_margin_tokens: int = (
             DEFAULT_SAFETY_MARGIN_TOKENS
         ),
@@ -112,6 +115,11 @@ class AgentLoop:
         if compaction_reserve_tokens < 1:
             raise ValueError(
                 "compaction_reserve_tokens must be at least 1"
+            )
+
+        if shadow_router is not None and live_router is not None:
+            raise ValueError(
+                "shadow_router and live_router cannot be enabled together"
             )
 
         if (
@@ -145,18 +153,8 @@ class AgentLoop:
         self._compaction_reserve_tokens = compaction_reserve_tokens
         self._monotonic_clock = monotonic_clock
         self._shadow_router = shadow_router
-
-        if context_compactor is not None:
-            self._context_compactor = context_compactor
-        elif self._model_capabilities is not None:
-            self._context_compactor = ProviderContextCompactor(
-                provider,
-                request_template,
-            )
-        else:
-            # Unknown models can still run normally. Context management is
-            # disabled because we do not know their safe context boundary.
-            self._context_compactor = None
+        self._live_router = live_router
+        self._context_compactor = context_compactor
 
         self._ledger = TaskLedger()
 
@@ -197,7 +195,10 @@ class AgentLoop:
         original_task = _original_task(initial_events)
         routing_state = (
             RoutingState.from_initial_prompt(original_task)
-            if self._shadow_router is not None
+            if (
+                self._shadow_router is not None
+                or self._live_router is not None
+            )
             else None
         )
         continuation: Message | None = None
@@ -220,8 +221,35 @@ class AgentLoop:
                     continuation,
                 )
 
+                live_route_result: LiveRouteResult | None = None
+                if (
+                    self._live_router is not None
+                    and routing_state is not None
+                ):
+                    live_route_result = self._live_router.select(
+                        routing_state.signals,
+                        request,
+                    )
+                    request = live_route_result.request
+
+                active_capabilities = (
+                    live_route_result.capabilities
+                    if (
+                        live_route_result is not None
+                        and live_route_result.applied
+                    )
+                    else self._capabilities_for_request(request)
+                )
+                context_compactor = self._context_compactor_for_request(
+                    request,
+                    active_capabilities,
+                )
+
                 try:
-                    assessment = self._assess_context(request)
+                    assessment = self._assess_context(
+                        request,
+                        active_capabilities,
+                    )
                 except ContextBudgetError as exc:
                     error = emit(
                         ErrorEvent,
@@ -261,6 +289,9 @@ class AgentLoop:
                                 previous_summary=previous_summary,
                                 recent_messages=recent_messages,
                                 previous_assessment=assessment,
+                                request=request,
+                                context_compactor=context_compactor,
+                                model_capabilities=active_capabilities,
                                 emit=emit,
                             )
                         )
@@ -386,6 +417,25 @@ class AgentLoop:
                                 if shadow_decision is not None
                                 else None
                             ),
+                            executed_route=(
+                                ExecutedRoute(
+                                    route_id=(
+                                        live_route_result.route.route_id
+                                    ),
+                                    provider=(
+                                        live_route_result.route.provider
+                                    ),
+                                    model=live_route_result.route.model,
+                                    reasons=(
+                                        live_route_result.decision.reasons
+                                    ),
+                                )
+                                if (
+                                    live_route_result is not None
+                                    and live_route_result.route is not None
+                                )
+                                else None
+                            ),
                         )
 
                     elif isinstance(event, ErrorEvent):
@@ -398,7 +448,7 @@ class AgentLoop:
                 if (
                     provider_error.kind == "context_overflow"
                     and assessment is not None
-                    and self._context_compactor is not None
+                    and context_compactor is not None
                 ):
                     # Our estimate was too low or provider rules differ.
                     # Retry only after compaction, never with the same request.
@@ -553,13 +603,14 @@ class AgentLoop:
     def _assess_context(
         self,
         request: ProviderRequest,
+        model_capabilities: ModelCapabilities | None,
     ) -> ContextAssessment | None:
-        if self._model_capabilities is None:
+        if model_capabilities is None:
             return None
 
         return assess_request_context(
             request,
-            self._model_capabilities,
+            model_capabilities,
             self._token_counter,
             safety_margin_tokens=(
                 self._context_safety_margin_tokens
@@ -586,14 +637,17 @@ class AgentLoop:
         previous_summary: str | None,
         recent_messages: tuple[Message, ...],
         previous_assessment: ContextAssessment,
+        request: ProviderRequest,
+        context_compactor: ContextCompactor | None,
+        model_capabilities: ModelCapabilities | None,
         emit: EventFactory,
     ) -> tuple[ContextCompacted, Message, str]:
-        if self._context_compactor is None:
+        if context_compactor is None:
             raise ContextCompactionError(
                 "context compaction is unavailable for this model"
             )
 
-        result = await self._context_compactor.compact(
+        result = await context_compactor.compact(
             CompactionInput(
                 original_task=original_task,
                 previous_summary=previous_summary,
@@ -613,11 +667,18 @@ class AgentLoop:
             self._ledger.snapshot(),
         )
 
-        compacted_request = self._build_request(
-            history=[],
-            continuation=continuation,
+        compacted_request = request.model_copy(
+            update={
+                "messages": messages_from_events(
+                    [],
+                    prefix_messages=(continuation,),
+                )
+            }
         )
-        compacted_assessment = self._assess_context(compacted_request)
+        compacted_assessment = self._assess_context(
+            compacted_request,
+            model_capabilities,
+        )
 
         if (
             compacted_assessment is not None
@@ -647,6 +708,32 @@ class AgentLoop:
         )
 
         return event, continuation, result.summary
+
+    def _capabilities_for_request(
+        self,
+        request: ProviderRequest,
+    ) -> ModelCapabilities | None:
+        """Return the requested model's limits, honoring injected test data."""
+
+        if request.model == self._request_template.model:
+            return self._model_capabilities
+
+        return capabilities_for_model(request.model)
+
+    def _context_compactor_for_request(
+        self,
+        request: ProviderRequest,
+        model_capabilities: ModelCapabilities | None,
+    ) -> ContextCompactor | None:
+        """Build compaction against the model selected for this live turn."""
+
+        if self._context_compactor is not None:
+            return self._context_compactor
+
+        if model_capabilities is None:
+            return None
+
+        return ProviderContextCompactor(self._provider, request)
 
     def _record_successful_file_edit(
         self,

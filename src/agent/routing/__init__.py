@@ -4,6 +4,7 @@ from agent.routing.catalog import (
     RouteNotFoundError,
 )
 from agent.routing.classifier import classify_initial_prompt
+from agent.routing.live import LiveRouteController, LiveRouteResult
 from agent.routing.models import RouteProfile, RouteTier
 from agent.routing.router import (
     RouterConfigurationError,
@@ -25,4 +26,6 @@ __all__ = [
     "RuleBasedRouter",
     "RouterConfigurationError",
     "classify_initial_prompt",
+    "LiveRouteController",
+    "LiveRouteResult",
 ]
