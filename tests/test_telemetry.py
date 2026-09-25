@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from agent.core.telemetry import SessionTelemetry, TurnTiming
+from agent.core.telemetry import SessionTelemetry, ShadowRouteRecommendation, TurnTiming
 from agent.events import Usage
 
 
@@ -204,4 +204,53 @@ def test_rejects_first_output_after_turn_completion():
         TurnTiming(
             provider_duration_seconds=Decimal("1.00"),
             time_to_first_output_seconds=Decimal("1.01"),
+        )
+
+def test_records_shadow_route_recommendations():
+    telemetry = SessionTelemetry()
+
+    telemetry.record_turn(
+        model="gpt-5.6-terra",
+        usage=Usage(),
+        shadow_route=ShadowRouteRecommendation(
+            route_id="economy-luna-medium",
+            provider="openai",
+            model="gpt-5.6-luna",
+            reasons=("simple task with no failure evidence",),
+        ),
+    )
+    telemetry.record_turn(
+        model="gpt-5.6-terra",
+        usage=Usage(),
+        shadow_route=ShadowRouteRecommendation(
+            route_id="strong-terra-high",
+            provider="openai",
+            model="gpt-5.6-terra",
+            reasons=("complex tasks start on the strong route",),
+        ),
+    )
+
+    assert telemetry.shadow_routed_turn_count == 2
+
+    # First recommendation differs from Terra; second recommendation matches.
+    assert telemetry.shadow_model_difference_count == 1
+
+
+def test_rejects_a_shadow_route_with_no_reasons():
+    with pytest.raises(ValueError, match="reasons must not be empty"):
+        ShadowRouteRecommendation(
+            route_id="economy-luna-medium",
+            provider="openai",
+            model="gpt-5.6-luna",
+            reasons=(),
+        )
+
+
+def test_rejects_a_shadow_route_with_a_blank_route_id():
+    with pytest.raises(ValueError, match="route_id must not be blank"):
+        ShadowRouteRecommendation(
+            route_id="   ",
+            provider="openai",
+            model="gpt-5.6-luna",
+            reasons=("simple task",),
         )

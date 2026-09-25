@@ -21,6 +21,7 @@ from agent.providers.base import (
     ToolUsePart,
 )
 from decimal import Decimal
+from agent.routing.router import RuleBasedRouter
 from agent.tools.base import Tool, ToolExecutionResult
 from agent.tools.registry import ToolRegistry
 
@@ -380,3 +381,43 @@ async def test_loop_records_provider_turn_timing():
     assert turn.timing is not None
     assert turn.timing.provider_duration_seconds == Decimal("1.75")
     assert turn.timing.time_to_first_output_seconds == Decimal("0.25")
+
+
+async def test_shadow_routing_records_a_recommendation_without_changing_model():
+    """Shadow mode observes a route; the request still uses test-model."""
+
+    emit = EventFactory("session-1")
+    provider = AddThenAnswerProvider()
+
+    loop = AgentLoop(
+        provider=provider,
+        request_template=_request_template(),
+        registry=ToolRegistry([AddNumbersTool()]),
+        shadow_router=RuleBasedRouter(),
+    )
+
+    events = [
+        event
+        async for event in loop.run(
+            _initial_events(emit),
+            emit,
+        )
+    ]
+
+    assert events[-1].type == "assistant.end"
+    assert [request.model for request in provider.requests] == [
+        "test-model",
+        "test-model",
+    ]
+
+    assert len(loop.telemetry.turns) == 2
+    assert [
+        turn.shadow_route.route_id
+        for turn in loop.telemetry.turns
+        if turn.shadow_route is not None
+    ] == [
+        "strong-terra-high",
+        "strong-terra-high",
+    ]
+    assert loop.telemetry.shadow_routed_turn_count == 2
+    assert loop.telemetry.shadow_model_difference_count == 2

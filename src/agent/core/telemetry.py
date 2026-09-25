@@ -59,6 +59,37 @@ class TurnTiming:
 
 
 @dataclass(frozen=True, slots=True)
+class ShadowRouteRecommendation:
+    """
+    A route the router recommended but did not execute.
+
+    Phase 5 records this beside the actual model call so we can compare
+    proposed routing behavior against the unchanged strong-route behavior.
+    """
+
+    route_id: str
+    provider: str
+    model: str
+    reasons: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.route_id.strip():
+            raise ValueError("route_id must not be blank")
+
+        if not self.provider.strip():
+            raise ValueError("provider must not be blank")
+
+        if not self.model.strip():
+            raise ValueError("model must not be blank")
+
+        if not self.reasons:
+            raise ValueError("reasons must not be empty")
+
+        if any(not reason.strip() for reason in self.reasons):
+            raise ValueError("reasons must not contain blank text")
+
+
+@dataclass(frozen=True, slots=True)
 class TurnTelemetry:
     """Usage and cost information from one completed LLM turn."""
 
@@ -67,6 +98,7 @@ class TurnTelemetry:
     usage: Usage
     cost: TurnCost | None
     stable_prefix_fingerprint: str | None = None
+    shadow_route: ShadowRouteRecommendation | None = None
     timing: TurnTiming | None = None
 
     @property
@@ -111,6 +143,7 @@ class SessionTelemetry:
         model: str,
         usage: Usage,
         stable_prefix_fingerprint: str | None = None,
+        shadow_route: ShadowRouteRecommendation | None = None,
         timing: TurnTiming | None = None,
     ) -> TurnTelemetry:
         if not model:
@@ -128,6 +161,7 @@ class SessionTelemetry:
             usage=usage,
             cost=cost,
             stable_prefix_fingerprint=stable_prefix_fingerprint,
+            shadow_route=shadow_route,
             timing=timing
         )
         self._turns.append(turn)
@@ -241,6 +275,33 @@ class SessionTelemetry:
         return (
             Decimal(self.cache_read_tokens)
             / Decimal(prompt_tokens)
+        )
+
+
+    @property
+    def shadow_routed_turn_count(self) -> int:
+        """Number of completed turns with a shadow recommendation."""
+
+        return sum(
+            1
+            for turn in self._turns
+            if turn.shadow_route is not None
+        )
+
+    @property
+    def shadow_model_difference_count(self) -> int:
+        """
+        Number of turns where the recommended model differed from the model
+        actually executed.
+        """
+
+        return sum(
+            1
+            for turn in self._turns
+            if (
+                turn.shadow_route is not None
+                and turn.shadow_route.model != turn.model
+            )
         )
 
     @property

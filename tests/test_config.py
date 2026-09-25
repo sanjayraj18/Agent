@@ -142,3 +142,31 @@ def test_non_object_tool_permission_environment_value_is_rejected(isolated):
             isolated,
             env={"AGENT_TOOL_PERMISSION_MODES": "[]"},
         )
+
+def test_routing_mode_defaults_to_off(isolated):
+    resolved = config.load(isolated, env={})
+
+    assert resolved["routing_mode"].value == "off"
+    assert resolved["routing_mode"].layer == "default"
+
+
+def test_routing_mode_can_be_enabled_for_shadow_observation(isolated):
+    resolved = config.load(
+        isolated,
+        env={"AGENT_ROUTING_MODE": "shadow"},
+    )
+
+    assert resolved["routing_mode"].value == "shadow"
+    assert resolved["routing_mode"].layer == "env"
+    assert resolved["routing_mode"].origin == "AGENT_ROUTING_MODE"
+
+
+def test_rejects_an_unknown_routing_mode(isolated):
+    with pytest.raises(
+        ConfigError,
+        match="routing_mode must be one of: off, shadow",
+    ):
+        config.load(
+            isolated,
+            env={"AGENT_ROUTING_MODE": "live"},
+        )

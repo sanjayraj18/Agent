@@ -39,6 +39,7 @@ from agent.persistence.event_log import EventLog
 from agent.persistence.migrations import migrate
 from agent.persistence.models import SessionRecord
 from agent.persistence.sessions import SessionStore
+from agent.routing.router import RuleBasedRouter
 from agent.sandbox import (
     SandboxBackend,
     SandboxMode,
@@ -169,6 +170,7 @@ def _log_live_telemetry(telemetry: SessionTelemetry) -> None:
 
     turn = telemetry.turns[-1]
     timing = turn.timing
+    shadow_route = turn.shadow_route
 
     logs.get("telemetry").info(
         "LLM turn complete",
@@ -208,6 +210,36 @@ def _log_live_telemetry(telemetry: SessionTelemetry) -> None:
                 str(telemetry.total_provider_duration_seconds)
                 if telemetry.total_provider_duration_seconds is not None
                 else None
+            ),
+            "shadow_route_id": (
+                shadow_route.route_id
+                if shadow_route is not None
+                else None
+            ),
+            "shadow_provider": (
+                shadow_route.provider
+                if shadow_route is not None
+                else None
+            ),
+            "shadow_model": (
+                shadow_route.model
+                if shadow_route is not None
+                else None
+            ),
+            "shadow_reasons": (
+                list(shadow_route.reasons)
+                if shadow_route is not None
+                else []
+            ),
+            "shadow_model_differs": (
+                shadow_route is not None
+                and shadow_route.model != turn.model
+            ),
+            "shadow_routed_turn_count": (
+                telemetry.shadow_routed_turn_count
+            ),
+            "shadow_model_difference_count": (
+                telemetry.shadow_model_difference_count
             ),
         },
     )
@@ -285,6 +317,23 @@ def _create_workspace_sandbox(
     except Exception:
         temporary_directory.cleanup()
         raise
+
+def _create_shadow_router(
+    settings: dict,
+) -> RuleBasedRouter | None:
+    """Create a recommendation-only router when shadow mode is enabled."""
+
+    routing_mode = settings["routing_mode"]
+
+    if routing_mode == "off":
+        return None
+
+    if routing_mode == "shadow":
+        return RuleBasedRouter()
+
+    raise ValueError(
+        f"unsupported routing_mode: {routing_mode!r}"
+    )
 
 
 async def _headless_run(
@@ -404,6 +453,7 @@ async def _headless_run(
                     ),
                 ]
             ),
+            shadow_router=_create_shadow_router(settings),
             permissions=permissions,
             approval_handler=approval_handler,
         )
@@ -554,6 +604,7 @@ def _persistent_runner_factory(
                     ),
                     permissions=permissions,
                     approval_handler=approval_handler,
+                    shadow_router=_create_shadow_router(settings),
                 )
 
                 async for event in loop.run(history, emit):
@@ -674,6 +725,11 @@ def main() -> None:
         "container",
     ]
 
+    routing_modes = [
+        "off",
+        "shadow",
+    ]
+
     sub.add_parser("config", help="show resolved settings and where they came from")
     sub.add_parser("tui", help="start the interactive terminal interface")
     serve = sub.add_parser(
@@ -683,6 +739,10 @@ def main() -> None:
     serve.add_argument(
         "--provider",
         choices=["anthropic", "openai", "auto"],
+    )
+    serve.add_argument(
+        "--routing-mode",
+        choices=routing_modes,
     )
     serve.add_argument("--provider-base-url")
     serve.add_argument( "--permission-mode",dest="permission_mode",choices=permission_modes)
@@ -737,6 +797,10 @@ def main() -> None:
     )
     bench_run.add_argument("--provider-base-url")
     bench_run.add_argument("--model")
+    bench_run.add_argument(
+            "--routing-mode",
+            choices=routing_modes,
+        )
     bench_run.add_argument(
         "--route",
         dest="route_id",
@@ -910,6 +974,7 @@ def main() -> None:
                     "benchmark_parallelism",
                     None,
                 ),
+                "routing_mode": getattr(args, "routing_mode", None),
             },
         )
     except config.ConfigError as exc:

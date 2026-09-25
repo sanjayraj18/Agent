@@ -35,7 +35,11 @@ from agent.core.ledger import (
 )
 from agent.core.permission import PermissionPolicy
 from agent.core.retry import RetryPolicy
-from agent.core.telemetry import SessionTelemetry, TurnTiming
+from agent.core.telemetry import (
+    SessionTelemetry,
+    ShadowRouteRecommendation,
+    TurnTiming,
+)
 from agent.events import (
     AssistantEnd,
     ContextCompacted,
@@ -56,6 +60,8 @@ from agent.providers.base import (
     ToolResultPart,
     ToolUsePart,
 )
+from agent.routing.router import RuleBasedRouter
+from agent.routing.state import RoutingState
 from agent.tools.dispatcher import ApprovalHandler, ToolDispatcher
 from agent.tools.registry import ToolRegistry
 
@@ -86,6 +92,7 @@ class AgentLoop:
         context_compactor: ContextCompactor | None = None,
         model_capabilities: ModelCapabilities | None = None,
         token_counter: TokenCounter | None = None,
+        shadow_router: RuleBasedRouter | None = None,
         context_safety_margin_tokens: int = (
             DEFAULT_SAFETY_MARGIN_TOKENS
         ),
@@ -93,7 +100,6 @@ class AgentLoop:
             DEFAULT_COMPACTION_RESERVE_TOKENS
         ),
         monotonic_clock: Callable[[], float] = time.perf_counter,
-
     ) -> None:
         if max_iterations < 1:
             raise ValueError("max_iterations must be at least 1")
@@ -138,6 +144,7 @@ class AgentLoop:
         )
         self._compaction_reserve_tokens = compaction_reserve_tokens
         self._monotonic_clock = monotonic_clock
+        self._shadow_router = shadow_router
 
         if context_compactor is not None:
             self._context_compactor = context_compactor
@@ -188,6 +195,11 @@ class AgentLoop:
         """Yield every event produced while completing one agent task."""
         history = list(initial_events)
         original_task = _original_task(initial_events)
+        routing_state = (
+            RoutingState.from_initial_prompt(original_task)
+            if self._shadow_router is not None
+            else None
+        )
         continuation: Message | None = None
         previous_summary: str | None = None
         self._ledger = TaskLedger()
@@ -284,6 +296,14 @@ class AgentLoop:
                 pending_calls = {}
                 assistant_end = None
                 provider_error: ErrorEvent | None = None
+                shadow_decision = (
+                    self._shadow_router.decide(routing_state.signals)
+                    if (
+                        self._shadow_router is not None
+                        and routing_state is not None
+                    )
+                    else None
+                )
 
                 stream_started_at = self._monotonic_clock()
                 first_output_at: float | None = None
@@ -291,12 +311,18 @@ class AgentLoop:
 
                 async for event in self._provider.stream(request, emit):
                     history.append(event)
-                    if (first_output_at is None and isinstance(event,(TextDelta,ThinkingDelta,ToolCallStart))):
+                    if (
+                        first_output_at is None
+                        and isinstance(
+                            event,
+                            (TextDelta, ThinkingDelta, ToolCallStart),
+                        )
+                    ):
                         first_output_at = self._monotonic_clock()
 
                     if isinstance(event, AssistantEnd):
                         stream_finished_at = self._monotonic_clock()
-                    
+
                     yield event
 
                     if isinstance(event, ToolCallStart):
@@ -318,8 +344,10 @@ class AgentLoop:
                         assistant_end = event
 
                         if stream_finished_at is None:
-                            raise RuntimeError( "assistant.end is missing stream timing")
-                        
+                            raise RuntimeError(
+                                "assistant.end is missing stream timing"
+                            )
+
                         self._telemetry.record_turn(
                             model=request.model,
                             usage=event.usage,
@@ -327,11 +355,36 @@ class AgentLoop:
                                 stable_prefix_fingerprint
                             ),
                             timing=TurnTiming(
-                                provider_duration_seconds=Decimal(str(stream_finished_at - stream_started_at)),
-                                time_to_first_output_seconds=(None
-                                    if first_output_at is None
-                                    else Decimal(str(first_output_at - stream_started_at))
+                                provider_duration_seconds=Decimal(
+                                    str(
+                                        stream_finished_at
+                                        - stream_started_at
+                                    )
                                 ),
+                                time_to_first_output_seconds=(
+                                    None
+                                    if first_output_at is None
+                                    else Decimal(
+                                        str(
+                                            first_output_at
+                                            - stream_started_at
+                                        )
+                                    )
+                                ),
+                            ),
+                            shadow_route=(
+                                ShadowRouteRecommendation(
+                                    route_id=(
+                                        shadow_decision.route.route_id
+                                    ),
+                                    provider=(
+                                        shadow_decision.route.provider
+                                    ),
+                                    model=shadow_decision.route.model,
+                                    reasons=shadow_decision.reasons,
+                                )
+                                if shadow_decision is not None
+                                else None
                             ),
                         )
 
@@ -439,13 +492,27 @@ class AgentLoop:
                         file_change=result.file_change,
                     )
                     history.append(tool_result)
+
+                    if routing_state is not None:
+                        routing_state = (
+                            routing_state.observe_tool_result(
+                                is_error=result.is_error,
+                            )
+                        )
+
                     yield tool_result
+
+                if routing_state is not None:
+                    routing_state = routing_state.begin_next_turn()
 
                 continue
 
             if assistant_end.stop_reason == "pause_turn":
                 # The paused assistant message is already in history.
                 # Resume without adding an artificial user message.
+                if routing_state is not None:
+                    routing_state = routing_state.begin_next_turn()
+
                 continue
 
             # end_turn, max_tokens, refusal, and interrupted end this run.

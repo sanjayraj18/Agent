@@ -20,6 +20,10 @@ _SANDBOX_MODES = {
     "container",
 }
 
+_ROUTING_MODES = {
+    "off",
+    "shadow",
+}
 
 DEFAULTS: dict[str, Any] = {
     # ``auto`` is convenient when the selected model has a familiar provider
@@ -29,6 +33,7 @@ DEFAULTS: dict[str, Any] = {
     "provider_base_url": None,
     "model": "claude-opus-5",
     "effort": "high",
+    "routing_mode": "off",
     "max_tokens": 16_000,
     "permission_mode": "ask",
     "tool_permission_modes": {},
@@ -54,6 +59,7 @@ ENV_MAP: dict[str, str] = {
     "AGENT_TOOL_PERMISSION_MODES": "tool_permission_modes",
     "AGENT_LOG_LEVEL": "log_level",
     "AGENT_SANDBOX_MODE": "sandbox_mode",
+    "AGENT_ROUTING_MODE": "routing_mode",
     "AGENT_SANDBOX_NETWORK_ALLOWED": (
         "sandbox_network_allowed"
     ),
@@ -195,6 +201,7 @@ def load(
     _validate_sandbox_settings(resolved)
     _validate_provider_settings(resolved)
     _validate_benchmark_settings(resolved)
+    _validate_routing_settings(resolved)
 
     return resolved
 
@@ -254,6 +261,15 @@ def _validate_sandbox_settings( resolved: Mapping[str, Resolved]) -> None:
             "sandbox_network_allowed must be a boolean"
         )
 
+def _validate_routing_settings(resolved: Mapping[str, Resolved]) -> None:
+    mode = resolved["routing_mode"].value
+
+    if not isinstance(mode, str) or mode not in _ROUTING_MODES:
+        choices = ", ".join(sorted(_ROUTING_MODES))
+        raise ConfigError(
+            "routing_mode must be one of: "
+            f"{choices}; got {mode!r}"
+        )
 
 def _validate_provider_settings(
     resolved: Mapping[str, Resolved],
