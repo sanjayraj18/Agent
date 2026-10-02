@@ -365,6 +365,21 @@ def _create_live_router(
     )
 
 
+def _benchmark_strategy_id(
+    *,
+    routing_mode: object,
+    route_id: str,
+) -> str:
+    """Name the policy being measured, separately from its starting route."""
+    if routing_mode == "live":
+        return "live-router"
+
+    if routing_mode == "shadow":
+        return f"shadow-{route_id}"
+
+    return f"fixed-{route_id}"
+
+
 async def _headless_run(
     prompt: str,
     credential: Credential,
@@ -463,6 +478,7 @@ async def _headless_run(
 
         loop = AgentLoop(
             provider=provider,
+            provider_id=_provider_id(settings),
             request_template=request_template,
             registry=ToolRegistry(
                 [
@@ -613,6 +629,7 @@ def _persistent_runner_factory(
                 )
                 loop = AgentLoop(
                     provider=provider,
+                    provider_id=session_provider,
                     request_template=request_template,
                     registry=ToolRegistry(
                         [
@@ -906,6 +923,33 @@ def main() -> None:
         default=Path("benchmarks/results/scoreboard.md"),
     )
 
+    bench_compare = bench_sub.add_parser(
+        "compare",
+        help="compare saved benchmark strategies fairly",
+    )
+    bench_compare.add_argument(
+        "--scoreboard",
+        dest="scoreboard_paths",
+        type=Path,
+        action="append",
+        required=True,
+        help=(
+            "scoreboard JSON path; repeat this flag to compare "
+            "separate result directories"
+        ),
+    )
+    bench_compare.add_argument(
+        "--baseline",
+        dest="baseline_strategy_id",
+        required=True,
+        help="strategy ID used as the comparison baseline",
+    )
+    bench_compare.add_argument(
+        "--output",
+        type=Path,
+        default=Path("benchmarks/results/comparison.md"),
+    )
+
     run = sub.add_parser("run", help="send one prompt and stream the reply")
     run.add_argument("prompt")
     run.add_argument(
@@ -1017,7 +1061,8 @@ def main() -> None:
     logs.setup(level=settings["log_level"])
 
     if args.command in {"run", "serve", "bench"} and not (
-        args.command == "bench" and args.bench_command == "report"
+        args.command == "bench"
+        and args.bench_command in {"report", "compare"}
     ):
         capabilities = capabilities_for_model(settings["model"])
 
@@ -1048,6 +1093,27 @@ def main() -> None:
             print(f"benchmark report error: {exc}", file=sys.stderr)
             raise SystemExit(2)
         print(f"wrote {args.output}")
+        return
+
+    if args.command == "bench" and args.bench_command == "compare":
+        from agent.benchmark.cli import compare_benchmark_scoreboards
+
+        try:
+            execution = compare_benchmark_scoreboards(
+                scoreboard_paths=args.scoreboard_paths,
+                baseline_strategy_id=args.baseline_strategy_id,
+                output_path=args.output,
+            )
+        except ValueError as exc:
+            print(f"benchmark comparison error: {exc}", file=sys.stderr)
+            raise SystemExit(2)
+
+        comparison = execution.comparison
+        print(
+            f"compared {len(comparison.candidates) + 1} strategies "
+            f"against {comparison.baseline.strategy_id!r}"
+        )
+        print(f"comparison: {execution.comparison_path}")
         return
 
     try:
@@ -1143,6 +1209,12 @@ def main() -> None:
             ):
                 yield event
 
+        benchmark_route_id = (
+            selected_route.route_id
+            if selected_route is not None
+            else "unrouted"
+        )
+
         try:
             execution = asyncio.run(
                 run_benchmark(
@@ -1152,10 +1224,10 @@ def main() -> None:
                     task_id=args.task_id,
                     provider=selected_provider,
                     model=settings["model"],
-                    route_id=(
-                        selected_route.route_id
-                        if selected_route is not None
-                        else "unrouted"
+                    route_id=benchmark_route_id,
+                    strategy_id=_benchmark_strategy_id(
+                        routing_mode=settings["routing_mode"],
+                        route_id=benchmark_route_id,
                     ),
                     container_image=args.container_image,
                     attempts=settings["benchmark_attempts"],

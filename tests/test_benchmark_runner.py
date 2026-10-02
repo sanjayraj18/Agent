@@ -1,9 +1,10 @@
+from decimal import Decimal
 from pathlib import Path
 import sys
 
 from agent.benchmark.images import LocalCommandExecutor
 from agent.benchmark.models import BenchmarkRunConfig, BenchmarkTask, CommandSpec, RunStatus
-from agent.benchmark.runner import BenchmarkRunner
+from agent.benchmark.runner import BenchmarkRunner, _metrics
 from agent.benchmark.trajectory import read_trajectory
 from agent.events import AssistantEnd, AssistantStart, Usage
 from agent.providers.base import EventFactory
@@ -24,15 +25,15 @@ async def test_runner_repeats_clean_attempts_and_preserves_trajectories(
         title="Fix answer",
         prompt="Fix answer.txt",
         fixture="fixture",
-        verification=[
+        verification=(
             CommandSpec(
                 argv=(
                     sys.executable,
                     "-c",
                     "from pathlib import Path; assert Path('answer.txt').read_text() == 'right'",
                 )
-            )
-        ],
+            ),
+        ),
         allowed_changed_paths=("answer.txt",),
     )
     config = BenchmarkRunConfig(
@@ -70,6 +71,81 @@ async def test_runner_repeats_clean_attempts_and_preserves_trajectories(
     assert not any((results_root / "workspaces").iterdir())
     assert all(result.metrics.turns == 1 for result in results)
     assert all(
+        result.metrics.executed_turns[0].model == "gpt-5.6-terra"
+        for result in results
+    )
+    assert all(
         len(read_trajectory(results_root / "trajectories", result.trajectory)) == 2
         for result in results
     )
+
+
+def test_metrics_prices_the_actual_live_routed_model_not_the_starting_model():
+    emit = EventFactory("session")
+    assistant_end = emit(
+        AssistantEnd,
+        stop_reason="end_turn",
+        usage=Usage(
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+        ),
+        executed_provider="openai",
+        executed_model="gpt-5.6-luna",
+        executed_route_id="economy-luna-medium",
+    )
+
+    metrics = _metrics(
+        [assistant_end],
+        duration_seconds=Decimal("1"),
+        provider="openai",
+        configured_model="gpt-5.6-terra",
+        configured_route_id="strong-terra-high",
+    )
+
+    assert metrics.executed_turns[0].model == "gpt-5.6-luna"
+    assert metrics.executed_turns[0].route_id == "economy-luna-medium"
+    assert metrics.cost_usd == Decimal("1.4")
+
+
+def test_metrics_uses_the_fixed_configuration_when_legacy_events_lack_metadata():
+    emit = EventFactory("session")
+    assistant_end = emit(
+        AssistantEnd,
+        stop_reason="end_turn",
+        usage=Usage(input_tokens=1_000_000, output_tokens=1_000_000),
+    )
+
+    metrics = _metrics(
+        [assistant_end],
+        duration_seconds=Decimal("1"),
+        provider="openai",
+        configured_model="gpt-5.6-terra",
+        configured_route_id="strong-terra-high",
+    )
+
+    assert metrics.executed_turns[0].model == "gpt-5.6-terra"
+    assert metrics.executed_turns[0].route_id == "strong-terra-high"
+    assert metrics.cost_usd == Decimal("14")
+
+
+def test_metrics_marks_a_run_cost_unknown_when_an_executed_model_has_no_price():
+    emit = EventFactory("session")
+    assistant_end = emit(
+        AssistantEnd,
+        stop_reason="end_turn",
+        usage=Usage(input_tokens=100),
+        executed_provider="openai",
+        executed_model="not-in-our-pricing-catalog",
+        executed_route_id="experimental",
+    )
+
+    metrics = _metrics(
+        [assistant_end],
+        duration_seconds=Decimal("1"),
+        provider="openai",
+        configured_model="gpt-5.6-terra",
+        configured_route_id="strong-terra-high",
+    )
+
+    assert metrics.executed_turns[0].cost_usd is None
+    assert metrics.cost_usd is None

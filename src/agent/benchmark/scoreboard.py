@@ -9,6 +9,8 @@ from typing import Iterable
 from agent.benchmark.models import (
     BenchmarkRunConfig,
     BenchmarkRunResult,
+    ExecutedTurn,
+    ModelMixEntry,
     RunStatus,
     ScoreboardRow,
 )
@@ -52,6 +54,8 @@ def build_scoreboard_row(
         provider=config.provider,
         model=config.model,
         route_id=config.route_id,
+        strategy_id=config.strategy_id,
+        model_mix=_build_model_mix(attempts),
         agent_revision=config.agent_revision,
         container_image=config.container_image,
         config_fingerprint=config.fingerprint,
@@ -87,3 +91,74 @@ def _population_standard_deviation(values: list[Decimal]) -> Decimal:
     # Decimal does not guarantee a context precision appropriate for an
     # arbitrary sqrt. A float is sufficient for a report-only deviation.
     return Decimal(str(sqrt(float(variance))))
+
+
+def _build_model_mix(
+    results: tuple[BenchmarkRunResult, ...],
+) -> tuple[ModelMixEntry, ...]:
+    """
+    Group real LLM turns by provider, model, and route.
+
+    This is based on execution receipts, not the benchmark's starting model.
+    """
+    grouped: dict[
+        tuple[str, str, str | None],
+        list[ExecutedTurn],
+    ] = {}
+
+    for result in results:
+        for turn in result.metrics.executed_turns:
+            key = (
+                turn.provider,
+                turn.model,
+                turn.route_id,
+            )
+            grouped.setdefault(key, []).append(turn)
+
+    entries: list[ModelMixEntry] = []
+
+    for (provider, model, route_id), turns in sorted(
+        grouped.items(),
+        key=lambda item: (
+            item[0][0],
+            item[0][1],
+            item[0][2] or "",
+        ),
+    ):
+        costs = [turn.cost_usd for turn in turns]
+        total_cost = (
+            None
+            if any(cost is None for cost in costs)
+            else sum(
+                (cost for cost in costs if cost is not None),
+                start=Decimal("0"),
+            )
+        )
+
+        entries.append(
+            ModelMixEntry(
+                provider=provider,
+                model=model,
+                route_id=route_id,
+                turns=len(turns),
+                input_tokens=sum(
+                    turn.usage.input_tokens
+                    for turn in turns
+                ),
+                output_tokens=sum(
+                    turn.usage.output_tokens
+                    for turn in turns
+                ),
+                cache_read_tokens=sum(
+                    turn.usage.cache_read_input_tokens
+                    for turn in turns
+                ),
+                cache_creation_tokens=sum(
+                    turn.usage.cache_creation_input_tokens
+                    for turn in turns
+                ),
+                cost_usd=total_cost,
+            )
+        )
+
+    return tuple(entries)

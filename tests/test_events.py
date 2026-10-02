@@ -43,3 +43,51 @@ def test_events_are_frozen():
 def test_typos_are_rejected():
     with pytest.raises(ValidationError):
         TextDelta(seq=1, session_id="s1", index=0, txt="hi")
+
+def test_assistant_end_roundtrip_preserves_execution_metadata():
+    event = AssistantEnd(
+        seq=9,
+        session_id="session-1",
+        stop_reason="end_turn",
+        usage=Usage(
+            input_tokens=120,
+            output_tokens=30,
+        ),
+        executed_provider="openai",
+        executed_model="gpt-5.6-luna",
+        executed_route_id="economy-luna-medium",
+    )
+
+    restored = loads(dumps(event))
+
+    assert isinstance(restored, AssistantEnd)
+    assert restored.executed_provider == "openai"
+    assert restored.executed_model == "gpt-5.6-luna"
+    assert restored.executed_route_id == "economy-luna-medium"
+
+
+def test_assistant_end_allows_a_fixed_model_without_a_route_id():
+    event = AssistantEnd(
+        seq=9,
+        session_id="session-1",
+        stop_reason="end_turn",
+        usage=Usage(),
+        executed_provider="openai",
+        executed_model="gpt-5.6-terra",
+    )
+
+    assert event.executed_route_id is None
+
+
+def test_assistant_end_rejects_partial_execution_metadata():
+    with pytest.raises(
+        ValidationError,
+        match="executed_provider and executed_model",
+    ):
+        AssistantEnd(
+            seq=9,
+            session_id="session-1",
+            stop_reason="end_turn",
+            usage=Usage(),
+            executed_model="gpt-5.6-luna",
+        )

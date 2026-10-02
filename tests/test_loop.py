@@ -388,6 +388,32 @@ async def test_loop_records_provider_turn_timing():
     assert turn.timing.time_to_first_output_seconds == Decimal("0.25")
 
 
+async def test_loop_attaches_canonical_execution_metadata_to_fixed_turns():
+    """Benchmarking must know who handled a non-routed provider turn."""
+    emit = EventFactory("session-1")
+
+    loop = AgentLoop(
+        provider=TimingProvider(),
+        provider_id="openai",
+        request_template=_request_template(),
+        registry=ToolRegistry(),
+    )
+
+    events = [
+        event
+        async for event in loop.run(
+            _initial_events(emit),
+            emit,
+        )
+    ]
+
+    completed = events[-1]
+    assert isinstance(completed, AssistantEnd)
+    assert completed.executed_provider == "openai"
+    assert completed.executed_model == "test-model"
+    assert completed.executed_route_id is None
+
+
 async def test_shadow_routing_records_a_recommendation_without_changing_model():
     """Shadow mode observes a route; the request still uses test-model."""
 
@@ -462,3 +488,9 @@ async def test_live_routing_changes_the_request_model_and_records_the_route():
     assert turn.shadow_route is None
     assert turn.executed_route is not None
     assert turn.executed_route.route_id == "economy-luna-medium"
+
+    completed = events[-1]
+    assert isinstance(completed, AssistantEnd)
+    assert completed.executed_provider == "openai"
+    assert completed.executed_model == "gpt-5.6-luna"
+    assert completed.executed_route_id == "economy-luna-medium"

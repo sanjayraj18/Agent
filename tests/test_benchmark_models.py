@@ -5,10 +5,12 @@ import pytest
 from agent.benchmark.models import (
     BenchmarkRunConfig,
     CommandSpec,
+    ExecutedTurn,
+    RunMetrics,
     ScoreboardRow,
     TrajectoryEntry,
 )
-from agent.events import UserMessage
+from agent.events import Usage, UserMessage
 from agent.providers.base import EventFactory
 
 
@@ -38,6 +40,108 @@ def test_config_fingerprint_is_stable_for_equal_configuration():
     assert BenchmarkRunConfig(**common).fingerprint == BenchmarkRunConfig(
         **common
     ).fingerprint
+
+
+def test_config_fingerprint_changes_for_a_different_routing_strategy():
+    fixed = BenchmarkRunConfig(
+        provider="openai",
+        model="gpt-5.6-terra",
+        agent_revision="a" * 40,
+        container_image=_image(),
+        strategy_id="fixed",
+    )
+    live = BenchmarkRunConfig(
+        provider="openai",
+        model="gpt-5.6-terra",
+        agent_revision="a" * 40,
+        container_image=_image(),
+        strategy_id="live",
+    )
+
+    assert fixed.fingerprint != live.fingerprint
+
+
+def test_run_metrics_preserves_the_actual_model_used_for_each_turn():
+    luna_turn = ExecutedTurn(
+        provider="openai",
+        model="gpt-5.6-luna",
+        route_id="economy-luna-medium",
+        usage=Usage(
+            input_tokens=100,
+            output_tokens=10,
+            cache_read_input_tokens=5,
+            cache_creation_input_tokens=2,
+        ),
+        cost_usd=Decimal("0.003"),
+    )
+    terra_turn = ExecutedTurn(
+        provider="openai",
+        model="gpt-5.6-terra",
+        route_id="strong-terra-high",
+        usage=Usage(
+            input_tokens=200,
+            output_tokens=20,
+            cache_read_input_tokens=6,
+            cache_creation_input_tokens=3,
+        ),
+        cost_usd=Decimal("0.020"),
+    )
+
+    metrics = RunMetrics(
+        duration_seconds=Decimal("1.2"),
+        input_tokens=300,
+        output_tokens=30,
+        cache_read_tokens=11,
+        cache_creation_tokens=5,
+        turns=2,
+        executed_turns=(luna_turn, terra_turn),
+        cost_usd=Decimal("0.023"),
+    )
+
+    assert [turn.model for turn in metrics.executed_turns] == [
+        "gpt-5.6-luna",
+        "gpt-5.6-terra",
+    ]
+    assert metrics.cost_usd == Decimal("0.023")
+
+
+def test_run_metrics_rejects_a_summary_that_disagrees_with_turn_receipts():
+    turn = ExecutedTurn(
+        provider="openai",
+        model="gpt-5.6-luna",
+        route_id="economy-luna-medium",
+        usage=Usage(input_tokens=100, output_tokens=10),
+        cost_usd=Decimal("0.003"),
+    )
+
+    with pytest.raises(ValueError, match="input_tokens"):
+        RunMetrics(
+            duration_seconds=Decimal("1"),
+            input_tokens=101,
+            output_tokens=10,
+            turns=1,
+            executed_turns=(turn,),
+            cost_usd=Decimal("0.003"),
+        )
+
+
+def test_run_metrics_marks_total_cost_unknown_when_a_turn_price_is_unknown():
+    turn = ExecutedTurn(
+        provider="openai",
+        model="future-model",
+        usage=Usage(input_tokens=100),
+        cost_usd=None,
+    )
+
+    metrics = RunMetrics(
+        duration_seconds=Decimal("1"),
+        input_tokens=100,
+        turns=1,
+        executed_turns=(turn,),
+        cost_usd=None,
+    )
+
+    assert metrics.cost_usd is None
 
 
 def test_trajectory_entry_rejects_a_mismatched_sequence():

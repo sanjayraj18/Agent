@@ -1,6 +1,6 @@
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal, Self, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 from datetime import datetime, timezone
 
 
@@ -60,6 +60,54 @@ class AssistantEnd(EventBase):
     type: Literal["assistant.end"] = "assistant.end"
     stop_reason: StopReason
     usage: Usage
+
+     # Providers do not need to send these fields. AgentLoop adds them after it
+    executed_provider : str | None = Field(
+        default = None,
+        min_length = 1,
+    )
+    executed_model: str | None = Field(
+        default=None,
+        min_length=1,
+    )
+    executed_route_id: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9-]*$",
+    )
+
+    @field_validator("executed_provider","executed_model","executed_route_id", mode="before")
+    @classmethod
+    def normalize_execution_metadata(cls,value: object) -> object:
+        if value is None or not isinstance(value, str):
+            return value
+
+        normalized = value.strip()
+
+        if not normalized:
+            raise ValueError(
+                "execution metadata must not be blank"
+            )
+
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_execution_metadata(self) -> Self:
+        has_provider = self.executed_provider is not None
+        has_model = self.executed_model is not None
+
+        if has_provider != has_model:
+            raise ValueError(
+                "executed_provider and executed_model "
+                "must be supplied together"
+            )
+
+        if self.executed_route_id is not None and not has_model:
+            raise ValueError(
+                "executed_route_id requires executed provider and model"
+            )
+
+        return self
+    
 
 class ContextCompacted(EventBase):
     """
@@ -150,7 +198,6 @@ class ThinkingSignature(EventBase):
     type: Literal["assistant.thinking_signature"] = "assistant.thinking_signature"
     index: int
     signature: str
-
 
 Event = Annotated[
     Union[

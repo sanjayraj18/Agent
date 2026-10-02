@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from agent.benchmark.catalog import BenchmarkCatalog
+from agent.benchmark.comparison import (
+    BenchmarkComparison,
+    compare_scoreboard_rows,
+)
 from agent.benchmark.git_info import read_git_provenance, require_clean_tree
 from agent.benchmark.images import DockerCommandExecutor
 from agent.benchmark.models import (
@@ -14,7 +19,12 @@ from agent.benchmark.models import (
     BenchmarkRunResult,
     ScoreboardRow,
 )
-from agent.benchmark.report import read_scoreboard, write_run_results, write_scoreboard
+from agent.benchmark.report import (
+    read_scoreboard,
+    write_comparison,
+    write_run_results,
+    write_scoreboard,
+)
 from agent.benchmark.runner import AgentAttempt, BenchmarkRunner
 from agent.benchmark.scoreboard import build_scoreboard_row
 from agent.events import Event
@@ -26,6 +36,14 @@ class BenchmarkExecution:
     scoreboard: ScoreboardRow
     results_path: Path
     scoreboard_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkComparisonExecution:
+    """Saved evidence produced by comparing several benchmark strategies."""
+
+    comparison: BenchmarkComparison
+    comparison_path: Path
 
 
 async def run_benchmark(
@@ -42,6 +60,7 @@ async def run_benchmark(
     agent_settings: dict[str, Any],
     agent_attempt: AgentAttempt,
     route_id: str = "unrouted",
+    strategy_id: str | None = None,
     keep_workspaces: bool = False,
 ) -> BenchmarkExecution:
     """Run one catalog task repeatedly and preserve its evidence."""
@@ -53,10 +72,20 @@ async def run_benchmark(
             "benchmarks refuse sandbox_mode='disabled'; use an enforced sandbox"
         )
 
+    resolved_strategy_id = (
+        strategy_id.strip()
+        if strategy_id is not None
+        else f"fixed-{route_id}"
+    )
+
+    if not resolved_strategy_id:
+        raise ValueError("strategy_id must not be blank")
+
     config = BenchmarkRunConfig(
         provider=provider,
         model=model,
         route_id=route_id,
+        strategy_id=resolved_strategy_id,
         agent_revision=provenance.revision,
         container_image=container_image,
         attempts=attempts,
@@ -114,4 +143,47 @@ async def run_benchmark(
         scoreboard=scoreboard,
         results_path=results_path,
         scoreboard_path=scoreboard_path,
+    )
+
+
+def compare_benchmark_scoreboards(
+    *,
+    scoreboard_paths: Iterable[Path],
+    baseline_strategy_id: str,
+    output_path: Path,
+) -> BenchmarkComparisonExecution:
+    """
+    Load one or more saved scoreboards, compare their rows, and save evidence.
+
+    Multiple paths allow us to compare runs saved under separate result roots,
+    such as benchmarks/results/strong-only and benchmarks/results/live-router.
+    """
+    paths = tuple(
+        path.expanduser().resolve()
+        for path in scoreboard_paths
+    )
+
+    if not paths:
+        raise ValueError("at least one scoreboard path is required")
+
+    rows = tuple(
+        row
+        for path in paths
+        for row in read_scoreboard(path)
+    )
+
+    if not rows:
+        raise ValueError("the supplied scoreboards contain no rows")
+
+    comparison = compare_scoreboard_rows(
+        rows,
+        baseline_strategy_id=baseline_strategy_id,
+    )
+
+    resolved_output_path = output_path.expanduser().resolve()
+    write_comparison(resolved_output_path, comparison)
+
+    return BenchmarkComparisonExecution(
+        comparison=comparison,
+        comparison_path=resolved_output_path,
     )

@@ -16,7 +16,7 @@ from pydantic import (
     model_validator,
 )
 
-from agent.events import Event
+from agent.events import Event, Usage
 
 
 def utc_now() -> datetime:
@@ -142,6 +142,14 @@ class BenchmarkRunConfig(BaseModel):
         pattern=r"^[a-z][a-z0-9-]*$",
     )
 
+    # Describes the routing policy being measured: fixed, shadow, or live.
+    # It is separate from route_id because live routing can use multiple routes.
+    strategy_id: str = Field(
+        default="fixed",
+        min_length=1,
+        pattern=r"^[a-z][a-z0-9-]*$",
+    )
+
     # Git commit of this agent implementation being measured.
     agent_revision: str = Field(min_length=7, max_length=64)
 
@@ -223,6 +231,74 @@ class RunStatus(StrEnum):
     ERROR = "error"
     TIMED_OUT = "timed_out"
 
+class ExecutedTurn(BaseModel):
+    """
+    The real model decision and usage for one completed LLM turn.
+
+    A live router may choose a different model from the benchmark's starting
+    model, so benchmark cost must come from this record—not an assumption.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: str = Field(pattern=r"^(anthropic|openai)$")
+    model: str = Field(min_length=1)
+    route_id: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9-]*$",
+    )
+    usage: Usage
+    cost_usd: Decimal | None = Field(
+        default=None,
+        ge=Decimal("0"),
+    )
+
+    @field_validator(
+        "provider",
+        "model",
+        "route_id",
+        mode="before",
+    )
+    @classmethod
+    def normalize_identifiers(cls, value: object) -> object:
+        if value is None or not isinstance(value, str):
+            return value
+
+        normalized = value.strip()
+
+        if not normalized:
+            raise ValueError("execution identifiers must not be blank")
+
+        return normalized
+
+
+class ModelMixEntry(BaseModel):
+    """
+    Aggregate usage for one actual provider/model/route combination across all
+    attempts that formed a scoreboard row.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider: str = Field(pattern=r"^(anthropic|openai)$")
+    model: str = Field(min_length=1)
+    route_id: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9-]*$",
+    )
+
+    turns: int = Field(ge=1)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    cache_read_tokens: int = Field(ge=0)
+    cache_creation_tokens: int = Field(ge=0)
+
+    # None means one or more turns used a model with unknown pricing.
+    cost_usd: Decimal | None = Field(
+        default=None,
+        ge=Decimal("0"),
+    )
+
 
 class RunMetrics(BaseModel):
     """Measured values from one agent attempt."""
@@ -235,6 +311,7 @@ class RunMetrics(BaseModel):
     cache_read_tokens: int = Field(default=0, ge=0)
     cache_creation_tokens: int = Field(default=0, ge=0)
     turns: int = Field(default=0, ge=0)
+    executed_turns: tuple[ExecutedTurn, ...] = ()
 
     # None means we honestly do not know the model's token price.
     cost_usd: Decimal | None = Field(default=None, ge=Decimal("0"))
@@ -247,6 +324,67 @@ class RunMetrics(BaseModel):
             + self.cache_read_tokens
             + self.cache_creation_tokens
         )
+
+    @model_validator(mode="after")
+    def validate_executed_turn_totals(self) -> RunMetrics:
+        """
+        When detailed records exist, ensure the summary cannot disagree with
+        the underlying per-turn evidence.
+        """
+        if not self.executed_turns:
+            return self
+
+        if self.turns != len(self.executed_turns):
+            raise ValueError(
+                "turns must equal the number of executed_turns"
+            )
+
+        if self.input_tokens != sum(
+            turn.usage.input_tokens for turn in self.executed_turns
+        ):
+            raise ValueError(
+                "input_tokens must equal executed_turn input tokens"
+            )
+
+        if self.output_tokens != sum(
+            turn.usage.output_tokens for turn in self.executed_turns
+        ):
+            raise ValueError(
+                "output_tokens must equal executed_turn output tokens"
+            )
+
+        if self.cache_read_tokens != sum(
+            turn.usage.cache_read_input_tokens
+            for turn in self.executed_turns
+        ):
+            raise ValueError(
+                "cache_read_tokens must equal executed_turn cache reads"
+            )
+
+        if self.cache_creation_tokens != sum(
+            turn.usage.cache_creation_input_tokens
+            for turn in self.executed_turns
+        ):
+            raise ValueError(
+                "cache_creation_tokens must equal executed_turn cache writes"
+            )
+
+        costs = [turn.cost_usd for turn in self.executed_turns]
+        expected_cost = (
+            None
+            if any(cost is None for cost in costs)
+            else sum(
+                (cost for cost in costs if cost is not None),
+                start=Decimal("0"),
+            )
+        )
+
+        if self.cost_usd != expected_cost:
+            raise ValueError(
+                "cost_usd must equal the total executed_turn cost"
+            )
+
+        return self
 
 
 class TrajectoryEntry(BaseModel):
@@ -371,7 +509,16 @@ class ScoreboardRow(BaseModel):
         min_length=1,
         pattern=r"^[a-z][a-z0-9-]*$",
     )
-    
+
+    strategy_id: str = Field(
+        default="fixed",
+        min_length=1,
+        pattern=r"^[a-z][a-z0-9-]*$",
+    )
+
+    # Totals across every benchmark attempt, grouped by actual execution.
+    model_mix: tuple[ModelMixEntry, ...] = ()
+
     agent_revision: str = Field(min_length=7)
     container_image: str = Field(min_length=1)
     config_fingerprint: str = Field(min_length=64, max_length=64)

@@ -86,6 +86,7 @@ class AgentLoop:
         provider: Provider,
         request_template: ProviderRequest,
         registry: ToolRegistry,
+        provider_id: str | None = None,
         max_iterations: int = 10,
         retry_policy: RetryPolicy | None = None,
         telemetry: SessionTelemetry | None = None,
@@ -117,6 +118,9 @@ class AgentLoop:
                 "compaction_reserve_tokens must be at least 1"
             )
 
+        if provider_id is not None and not provider_id.strip():
+            raise ValueError("provider_id must not be blank")
+
         if shadow_router is not None and live_router is not None:
             raise ValueError(
                 "shadow_router and live_router cannot be enabled together"
@@ -131,6 +135,7 @@ class AgentLoop:
             )
 
         self._provider = provider
+        self._provider_id = provider_id
         self._request_template = request_template
         self._registry = registry
         self._dispatcher = ToolDispatcher(
@@ -340,7 +345,32 @@ class AgentLoop:
                 first_output_at: float | None = None
                 stream_finished_at: float | None = None
 
-                async for event in self._provider.stream(request, emit):
+                async for raw_event in self._provider.stream(request, emit):
+                    event: Event = raw_event
+
+                    if isinstance(raw_event, AssistantEnd):
+                        route = (
+                            live_route_result.route
+                            if live_route_result is not None
+                            else None
+                        )
+
+                        event = raw_event.model_copy(
+                            update={
+                                "executed_provider": (
+                                    self._executed_provider(
+                                        live_route_result
+                                    )
+                                ),
+                                "executed_model": request.model,
+                                "executed_route_id": (
+                                    route.route_id
+                                    if route is not None
+                                    else None
+                                ),
+                            }
+                        )
+
                     history.append(event)
                     if (
                         first_output_at is None
@@ -734,6 +764,25 @@ class AgentLoop:
             return None
 
         return ProviderContextCompactor(self._provider, request)
+
+    def _executed_provider(
+        self,
+        live_route_result: LiveRouteResult | None,
+    ) -> str:
+        """Return the provider that actually handled this completed turn."""
+
+        route = (
+            live_route_result.route
+            if live_route_result is not None
+            else None
+        )
+
+        if route is not None:
+            return route.provider
+
+        # Application code supplies the canonical provider ID. Test fakes
+        # safely fall back to their declared provider name.
+        return self._provider_id or self._provider.name
 
     def _record_successful_file_edit(
         self,

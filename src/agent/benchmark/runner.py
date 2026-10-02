@@ -18,6 +18,7 @@ from agent.benchmark.models import (
     BenchmarkRunResult,
     BenchmarkTask,
     CommandSpec,
+    ExecutedTurn,
     RunMetrics,
     RunStatus,
     utc_now,
@@ -147,8 +148,12 @@ class BenchmarkRunner:
         finished_at = utc_now()
         metrics = _metrics(
             assistant_ends,
-            duration_seconds=Decimal(str(time.perf_counter() - started_monotonic)),
-            model=config.model,
+            duration_seconds=Decimal(
+                str(time.perf_counter() - started_monotonic)
+            ),
+            provider=config.provider,
+            configured_model=config.model,
+            configured_route_id=config.route_id,
         )
 
         return BenchmarkRunResult(
@@ -173,24 +178,51 @@ def _metrics(
     assistant_ends: list[AssistantEnd],
     *,
     duration_seconds: Decimal,
-    model: str,
+    provider: str,
+    configured_model: str,
+    configured_route_id: str,
 ) -> RunMetrics:
+    """
+    Build auditable metrics from the actual model used on every LLM turn.
+
+    Older providers and unit-test fakes may omit execution metadata. In that
+    case, use the benchmark configuration as the truthful fixed-model fallback.
+    """
+    executed_turns = tuple(
+        _executed_turn(
+            event,
+            fallback_provider=provider,
+            fallback_model=configured_model,
+            fallback_route_id=configured_route_id,
+        )
+        for event in assistant_ends
+    )
+
     usage = Usage(
-        input_tokens=sum(event.usage.input_tokens for event in assistant_ends),
-        output_tokens=sum(event.usage.output_tokens for event in assistant_ends),
+        input_tokens=sum(
+            turn.usage.input_tokens
+            for turn in executed_turns
+        ),
+        output_tokens=sum(
+            turn.usage.output_tokens
+            for turn in executed_turns
+        ),
         cache_read_input_tokens=sum(
-            event.usage.cache_read_input_tokens for event in assistant_ends
+            turn.usage.cache_read_input_tokens
+            for turn in executed_turns
         ),
         cache_creation_input_tokens=sum(
-            event.usage.cache_creation_input_tokens for event in assistant_ends
+            turn.usage.cache_creation_input_tokens
+            for turn in executed_turns
         ),
     )
-    costs = [calculate_known_model_cost(model, event.usage) for event in assistant_ends]
+
+    costs = [turn.cost_usd for turn in executed_turns]
     total_cost = (
         None
         if any(cost is None for cost in costs)
         else sum(
-            (cost.total_usd for cost in costs if cost is not None),
+            (cost for cost in costs if cost is not None),
             start=Decimal("0"),
         )
     )
@@ -201,6 +233,37 @@ def _metrics(
         output_tokens=usage.output_tokens,
         cache_read_tokens=usage.cache_read_input_tokens,
         cache_creation_tokens=usage.cache_creation_input_tokens,
-        turns=len(assistant_ends),
+        turns=len(executed_turns),
+        executed_turns=executed_turns,
         cost_usd=total_cost,
+    )
+
+
+def _executed_turn(
+    event: AssistantEnd,
+    *,
+    fallback_provider: str,
+    fallback_model: str,
+    fallback_route_id: str,
+) -> ExecutedTurn:
+    """Convert one assistant-end event into an auditable cost receipt."""
+    actual_provider = event.executed_provider or fallback_provider
+    actual_model = event.executed_model or fallback_model
+    actual_route_id = event.executed_route_id or fallback_route_id
+
+    calculated_cost = calculate_known_model_cost(
+        actual_model,
+        event.usage,
+    )
+
+    return ExecutedTurn(
+        provider=actual_provider,
+        model=actual_model,
+        route_id=actual_route_id,
+        usage=event.usage,
+        cost_usd=(
+            calculated_cost.total_usd
+            if calculated_cost is not None
+            else None
+        ),
     )
