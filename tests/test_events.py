@@ -1,3 +1,5 @@
+import json
+
 from pydantic import ValidationError
 import pytest
 
@@ -77,6 +79,21 @@ def test_assistant_end_allows_a_fixed_model_without_a_route_id():
     )
 
     assert event.executed_route_id is None
+
+
+def test_unannotated_assistant_end_keeps_the_legacy_wire_shape():
+    event = AssistantEnd(
+        seq=9,
+        session_id="session-1",
+        stop_reason="end_turn",
+        usage=Usage(),
+    )
+
+    encoded = json.loads(dumps(event))
+
+    assert "executed_provider" not in encoded
+    assert "executed_model" not in encoded
+    assert "executed_route_id" not in encoded
 
 
 def test_assistant_end_rejects_partial_execution_metadata():

@@ -221,7 +221,9 @@ Event = Annotated[
 EventAdapter: TypeAdapter[Event] = TypeAdapter(Event) # type: ignore
 
 def dumps(event: Event) -> str:
-    return EventAdapter.dump_json(event).decode()
+    # Optional fields added in later schema versions must not alter the wire
+    # shape of older provider transcripts when their value is still absent.
+    return EventAdapter.dump_json(event, exclude_none=True).decode()
 
 
 def loads(raw: str | bytes) -> Event:
