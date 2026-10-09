@@ -4,10 +4,14 @@ import pytest
 
 from agent.benchmark.models import (
     BenchmarkRunConfig,
+    BenchmarkTask,
     CommandSpec,
     ExecutedTurn,
+    MilestoneKind,
+    MilestoneSpec,
     RunMetrics,
     ScoreboardRow,
+    TaskCategory,
     TrajectoryEntry,
 )
 from agent.events import Usage, UserMessage
@@ -16,6 +20,76 @@ from agent.providers.base import EventFactory
 
 def _image() -> str:
     return "example.test/python@sha256:" + "a" * 64
+
+
+def _task_contract(**overrides: object) -> BenchmarkTask:
+    values: dict[str, object] = {
+        "task_id": "fix-add-bug",
+        "title": "Fix a simple addition bug",
+        "prompt": "Fix the bug and run the tests.",
+        "category": "bug_fix",
+        "fixture": "fixtures/fix-add-bug",
+        "verification": [{"argv": ["python", "-m", "pytest", "-q"]}],
+    }
+    values.update(overrides)
+    return BenchmarkTask.model_validate(values)
+
+
+def test_task_contract_keeps_its_category_and_public_milestones():
+    task = _task_contract(
+        allowed_changed_paths=("src/math_utils.py",),
+        milestones=(
+            MilestoneSpec(
+                milestone_id="inspect-workspace",
+                description="Inspect the workspace before editing.",
+                kind=MilestoneKind.TOOL_CALLED,
+                tool_names=("read_file", "grep"),
+            ),
+        ),
+        forbidden_tool_names=("network_fetch",),
+    )
+
+    assert task.category is TaskCategory.BUG_FIX
+    assert task.allowed_changed_paths == ("src/math_utils.py",)
+    assert task.milestones[0].tool_names == ("read_file", "grep")
+    assert task.forbidden_tool_names == ("network_fetch",)
+
+
+def test_task_contract_rejects_duplicate_milestone_ids():
+    milestone = {
+        "milestone_id": "inspect-workspace",
+        "description": "Inspect the workspace.",
+        "kind": "tool_called",
+        "tool_names": ["read_file"],
+    }
+
+    with pytest.raises(ValueError, match="milestone_id values must be unique"):
+        _task_contract(milestones=(milestone, milestone))
+
+
+def test_task_contract_rejects_a_milestone_that_requires_a_forbidden_tool():
+    with pytest.raises(
+        ValueError,
+        match="milestone cannot require a forbidden tool",
+    ):
+        _task_contract(
+            milestones=(
+                {
+                    "milestone_id": "inspect-workspace",
+                    "description": "Inspect the workspace.",
+                    "kind": "tool_called",
+                    "tool_names": ["read_file"],
+                },
+            ),
+            forbidden_tool_names=("read_file",),
+        )
+
+
+def test_task_contract_rejects_duplicate_allowed_changed_paths():
+    with pytest.raises(ValueError, match="allowed_changed_paths must be unique"):
+        _task_contract(
+            allowed_changed_paths=("src/math_utils.py", "src/math_utils.py"),
+        )
 
 
 def test_config_requires_three_attempts_and_a_pinned_image():

@@ -12,21 +12,29 @@ from agent.benchmark.models import (
     BenchmarkRunConfig,
     BenchmarkRunResult,
     BenchmarkTask,
+    CommandSpec,
+    MilestoneKind,
+    MilestoneSpec,
     ScoreboardRow,
+    TaskCategory,
 )
 from agent.benchmark.runner import BenchmarkRunner
 
 __all__ = [
+    "BaselineRelation",
     "BenchmarkCatalog",
     "BenchmarkCatalogError",
-    "BaselineRelation",
     "BenchmarkComparison",
-    "CandidateComparison",
-    "ComparisonError",
     "BenchmarkRunConfig",
     "BenchmarkRunResult",
     "BenchmarkRunner",
     "BenchmarkTask",
+    "CandidateComparison",
+    "CommandSpec",
+    "ComparisonError",
+    "MilestoneKind",
+    "MilestoneSpec",
     "ScoreboardRow",
+    "TaskCategory",
     "compare_scoreboard_rows",
 ]

@@ -40,6 +40,80 @@ def _require_relative_path(value: str, *, field_name: str) -> str:
     return normalized
 
 
+class TaskCategory(StrEnum):
+    """The kind of capability an evaluation task measures."""
+
+    BUG_FIX = "bug_fix"
+    MULTI_FILE_CHANGE = "multi_file_change"
+    INVESTIGATION = "investigation"
+    TOOL_RECOVERY = "tool_recovery"
+    SAFETY_REFUSAL = "safety_refusal"
+    VERIFICATION = "verification"
+
+
+class MilestoneKind(StrEnum):
+    """
+    Observable evidence required during a run.
+
+    We intentionally inspect public runtime evidence such as tool calls,
+    never private model reasoning.
+    """
+
+    TOOL_CALLED = "tool_called"
+
+
+class MilestoneSpec(BaseModel):
+    """
+    One observable event that a task requires.
+
+    Example: before editing a bug fix, the agent should inspect the workspace.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    milestone_id: str = Field(
+        min_length=3,
+        pattern=r"^[a-z0-9][a-z0-9_-]*$",
+    )
+    description: str = Field(min_length=1)
+    kind: MilestoneKind
+    tool_names: tuple[str, ...] = Field(min_length=1)
+
+    @field_validator("description")
+    @classmethod
+    def reject_blank_description(cls, value: str) -> str:
+        normalized = value.strip()
+
+        if not normalized:
+            raise ValueError("milestone description must not be blank")
+
+        return normalized
+
+    @field_validator("tool_names")
+    @classmethod
+    def validate_tool_names(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized_names: list[str] = []
+
+        for value in values:
+            normalized = value.strip()
+
+            if not normalized:
+                raise ValueError("milestone tool names must not be blank")
+
+            if not normalized.replace("_", "").isalnum():
+                raise ValueError(
+                    "milestone tool names may contain only letters, numbers, "
+                    "and underscores"
+                )
+
+            normalized_names.append(normalized)
+
+        if len(normalized_names) != len(set(normalized_names)):
+            raise ValueError("milestone tool names must be unique")
+
+        return tuple(normalized_names)
+
+
 class CommandSpec(BaseModel):
     """
     One verification command.
@@ -85,6 +159,9 @@ class BenchmarkTask(BaseModel):
     title: str = Field(min_length=1)
     prompt: str = Field(min_length=1)
 
+    # Lets reports answer: “Which capability is weak?”
+    category: TaskCategory
+
     # A repository fixture copied into a fresh workspace for every attempt.
     fixture: str
 
@@ -95,6 +172,11 @@ class BenchmarkTask(BaseModel):
 
     # Empty means the agent may modify any file inside the fixture workspace.
     allowed_changed_paths: tuple[str, ...] = ()
+
+    # Public evidence required during the trajectory.
+    milestones: tuple[MilestoneSpec, ...] = ()
+
+    forbidden_tool_names: tuple[str, ...] = ()
 
     @field_validator("title", "prompt")
     @classmethod
@@ -109,19 +191,71 @@ class BenchmarkTask(BaseModel):
     def validate_fixture(cls, value: str) -> str:
         return _require_relative_path(value, field_name="fixture")
 
+
     @field_validator("allowed_changed_paths")
     @classmethod
-    def validate_allowed_changed_paths(
-        cls,
-        values: tuple[str, ...],
-    ) -> tuple[str, ...]:
-        return tuple(
+    def validate_allowed_changed_paths(cls,values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized_paths = tuple(
             _require_relative_path(
                 value,
                 field_name="allowed_changed_paths item",
             )
             for value in values
         )
+
+        if len(normalized_paths) != len(set(normalized_paths)):
+            raise ValueError("allowed_changed_paths must be unique")
+
+        return normalized_paths
+
+    @field_validator("milestones")
+    @classmethod
+    def validate_milestones(cls,values: tuple[MilestoneSpec, ...]) -> tuple[MilestoneSpec, ...]:
+        milestone_ids = [
+            milestone.milestone_id
+            for milestone in values
+        ]
+
+        if len(milestone_ids) != len(set(milestone_ids)):
+            raise ValueError("milestone_id values must be unique")
+
+        return values
+
+    @field_validator("forbidden_tool_names")
+    @classmethod
+    def validate_forbidden_tool_names(cls,values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized_names: list[str] = []
+
+        for value in values:
+            normalized = value.strip()
+
+            if not normalized:
+                raise ValueError("forbidden tool names must not be blank")
+
+            if not normalized.replace("_", "").isalnum():
+                raise ValueError(
+                    "forbidden tool names may contain only letters, numbers, "
+                    "and underscores"
+                )
+
+            normalized_names.append(normalized)
+
+        if len(normalized_names) != len(set(normalized_names)):
+            raise ValueError("forbidden_tool_names must be unique")
+
+        return tuple(normalized_names)
+
+    @model_validator(mode="after")
+    def reject_impossible_milestones(self) -> BenchmarkTask:
+        forbidden_tools = set(self.forbidden_tool_names)
+
+        for milestone in self.milestones:
+            if forbidden_tools.intersection(milestone.tool_names):
+                raise ValueError(
+                    "a milestone cannot require a forbidden tool"
+                )
+
+        return self
 
 
 class BenchmarkRunConfig(BaseModel):
@@ -230,6 +364,7 @@ class RunStatus(StrEnum):
     FAILED = "failed"
     ERROR = "error"
     TIMED_OUT = "timed_out"
+
 
 class ExecutedTurn(BaseModel):
     """
