@@ -1,6 +1,7 @@
 {
   "task_id": "fix-add-bug",
   "title": "Fix a simple addition bug",
+  "category": "bug_fix",
   "prompt": "Inspect the repository, fix the bug in src/math_utils.py, and run the tests. Only modify the implementation file.",
   "fixture": "fixtures/fix-add-bug",
   "verification": [
@@ -12,5 +13,20 @@
   "timeout_seconds": 600,
   "allowed_changed_paths": [
     "src/math_utils.py"
-  ]
+  ],
+  "milestones": [
+    {
+      "milestone_id": "inspect-workspace",
+      "description": "Inspect the workspace before making the implementation change.",
+      "kind": "tool_called",
+      "tool_names": ["read_file", "grep", "glob"]
+    },
+    {
+      "milestone_id": "run-verification",
+      "description": "Use the shell to verify the implementation before finishing.",
+      "kind": "tool_called",
+      "tool_names": ["bash"]
+    }
+  ],
+  "forbidden_tool_names": []
 }
