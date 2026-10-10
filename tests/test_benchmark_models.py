@@ -9,9 +9,11 @@ from agent.benchmark.models import (
     DiagnosisCategory,
     DiagnosisEvidence,
     DiagnosisEvidenceSource,
+    DiagnosisSummary,
     EvaluationResult,
     EvaluationViolation,
     EvaluationViolationKind,
+    FailurePattern,
     ExecutedTurn,
     MilestoneKind,
     MilestoneResult,
@@ -338,6 +340,24 @@ def test_run_diagnosis_rejects_a_success_category_for_a_failed_run():
                 ),
             ),
             suggested_next_step="Inspect the result.",
+        )
+
+
+def test_diagnosis_summary_rejects_incorrect_failure_pattern_math():
+    with pytest.raises(ValueError, match="share_of_failed_runs"):
+        DiagnosisSummary(
+            task_id="fix-add-bug",
+            total_runs=4,
+            passed_runs=2,
+            failed_runs=2,
+            failure_patterns=(
+                FailurePattern(
+                    category=DiagnosisCategory.VERIFICATION_FAILED,
+                    count=2,
+                    share_of_failed_runs=Decimal("0.5"),
+                    share_of_all_runs=Decimal("0.5"),
+                ),
+            ),
         )
 
 

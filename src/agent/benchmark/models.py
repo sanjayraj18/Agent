@@ -892,6 +892,78 @@ class RunDiagnosis(BaseModel):
         return self
 
 
+class FailurePattern(BaseModel):
+    """How often one failure category occurred within a task's attempts."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    category: DiagnosisCategory
+    count: int = Field(ge=1)
+    share_of_failed_runs: Decimal = Field(
+        ge=Decimal("0"),
+        le=Decimal("1"),
+    )
+    share_of_all_runs: Decimal = Field(
+        ge=Decimal("0"),
+        le=Decimal("1"),
+    )
+
+    @model_validator(mode="after")
+    def reject_success_as_a_failure_pattern(self) -> FailurePattern:
+        if self.category is DiagnosisCategory.PASSED:
+            raise ValueError("a failure pattern cannot use the passed category")
+
+        return self
+
+
+class DiagnosisSummary(BaseModel):
+    """Auditable failure distribution across repeated attempts of one task."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    task_id: str = Field(min_length=3)
+    total_runs: int = Field(ge=1)
+    passed_runs: int = Field(ge=0)
+    failed_runs: int = Field(ge=0)
+    failure_patterns: tuple[FailurePattern, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_failure_distribution(self) -> DiagnosisSummary:
+        if self.passed_runs + self.failed_runs != self.total_runs:
+            raise ValueError(
+                "passed_runs plus failed_runs must equal total_runs"
+            )
+
+        categories = [pattern.category for pattern in self.failure_patterns]
+        if len(categories) != len(set(categories)):
+            raise ValueError("failure pattern categories must be unique")
+
+        if sum(pattern.count for pattern in self.failure_patterns) != self.failed_runs:
+            raise ValueError(
+                "failure pattern counts must equal failed_runs"
+            )
+
+        for pattern in self.failure_patterns:
+            expected_failed_share = Decimal(pattern.count) / Decimal(
+                self.failed_runs
+            )
+            expected_all_share = Decimal(pattern.count) / Decimal(
+                self.total_runs
+            )
+
+            if pattern.share_of_failed_runs != expected_failed_share:
+                raise ValueError(
+                    "share_of_failed_runs must equal count / failed_runs"
+                )
+
+            if pattern.share_of_all_runs != expected_all_share:
+                raise ValueError(
+                    "share_of_all_runs must equal count / total_runs"
+                )
+
+        return self
+
+
 class ReliabilityPoint(BaseModel):
     """
     Reliability estimates for one retry budget k.

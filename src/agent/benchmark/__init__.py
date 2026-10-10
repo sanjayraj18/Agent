@@ -8,7 +8,11 @@ from agent.benchmark.comparison import (
     ComparisonError,
     compare_scoreboard_rows,
 )
-from agent.benchmark.diagnosis import diagnose_run
+from agent.benchmark.diagnosis import (
+    DiagnosisError,
+    diagnose_run,
+    summarize_diagnoses,
+)
 from agent.benchmark.models import (
     BenchmarkRunConfig,
     BenchmarkRunResult,
@@ -17,9 +21,11 @@ from agent.benchmark.models import (
     DiagnosisCategory,
     DiagnosisEvidence,
     DiagnosisEvidenceSource,
+    DiagnosisSummary,
     EvaluationResult,
     EvaluationViolation,
     EvaluationViolationKind,
+    FailurePattern,
     MilestoneKind,
     MilestoneResult,
     MilestoneSpec,
@@ -42,11 +48,14 @@ __all__ = [
     "CommandSpec",
     "ComparisonError",
     "DiagnosisCategory",
+    "DiagnosisError",
     "DiagnosisEvidence",
     "DiagnosisEvidenceSource",
+    "DiagnosisSummary",
     "EvaluationResult",
     "EvaluationViolation",
     "EvaluationViolationKind",
+    "FailurePattern",
     "MilestoneKind",
     "MilestoneResult",
     "MilestoneSpec",
@@ -55,4 +64,5 @@ __all__ = [
     "TaskCategory",
     "compare_scoreboard_rows",
     "diagnose_run",
+    "summarize_diagnoses",
 ]
