@@ -3,10 +3,17 @@ from pathlib import Path
 import sys
 
 from agent.benchmark.images import LocalCommandExecutor
-from agent.benchmark.models import BenchmarkRunConfig, BenchmarkTask, CommandSpec, RunStatus
+from agent.benchmark.models import (
+    BenchmarkRunConfig,
+    BenchmarkTask,
+    CommandSpec,
+    MilestoneKind,
+    MilestoneSpec,
+    RunStatus,
+)
 from agent.benchmark.runner import BenchmarkRunner, _metrics
 from agent.benchmark.trajectory import read_trajectory
-from agent.events import AssistantEnd, AssistantStart, Usage
+from agent.events import AssistantEnd, AssistantStart, ToolCallStart, Usage
 from agent.providers.base import EventFactory
 
 
@@ -24,6 +31,7 @@ async def test_runner_repeats_clean_attempts_and_preserves_trajectories(
         task_id="fix-answer",
         title="Fix answer",
         prompt="Fix answer.txt",
+        category="bug_fix",
         fixture="fixture",
         verification=(
             CommandSpec(
@@ -35,6 +43,14 @@ async def test_runner_repeats_clean_attempts_and_preserves_trajectories(
             ),
         ),
         allowed_changed_paths=("answer.txt",),
+        milestones=(
+            MilestoneSpec(
+                milestone_id="inspect-workspace",
+                description="Inspect the workspace before editing.",
+                kind=MilestoneKind.TOOL_CALLED,
+                tool_names=("read_file",),
+            ),
+        ),
     )
     config = BenchmarkRunConfig(
         provider="openai",
@@ -49,6 +65,12 @@ async def test_runner_repeats_clean_attempts_and_preserves_trajectories(
         (workspace / "answer.txt").write_text("right", encoding="utf-8")
         emit = EventFactory("session")
         yield emit(AssistantStart)
+        yield emit(
+            ToolCallStart,
+            index=0,
+            call_id="read-answer",
+            name="read_file",
+        )
         yield emit(
             AssistantEnd,
             stop_reason="end_turn",
@@ -75,8 +97,15 @@ async def test_runner_repeats_clean_attempts_and_preserves_trajectories(
         for result in results
     )
     assert all(
-        len(read_trajectory(results_root / "trajectories", result.trajectory)) == 2
+        len(read_trajectory(results_root / "trajectories", result.trajectory)) == 3
         for result in results
+    )
+    assert all(result.evaluation is not None for result in results)
+    assert all(result.evaluation.passed for result in results if result.evaluation)
+    assert all(
+        result.evaluation.milestones[0].observed_tool_name == "read_file"
+        for result in results
+        if result.evaluation is not None
     )
 
 

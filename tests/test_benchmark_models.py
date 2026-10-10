@@ -6,13 +6,18 @@ from agent.benchmark.models import (
     BenchmarkRunConfig,
     BenchmarkTask,
     CommandSpec,
+    EvaluationResult,
+    EvaluationViolation,
+    EvaluationViolationKind,
     ExecutedTurn,
     MilestoneKind,
+    MilestoneResult,
     MilestoneSpec,
     RunMetrics,
     ScoreboardRow,
     TaskCategory,
     TrajectoryEntry,
+    VerificationResult,
 )
 from agent.events import Usage, UserMessage
 from agent.providers.base import EventFactory
@@ -89,6 +94,44 @@ def test_task_contract_rejects_duplicate_allowed_changed_paths():
     with pytest.raises(ValueError, match="allowed_changed_paths must be unique"):
         _task_contract(
             allowed_changed_paths=("src/math_utils.py", "src/math_utils.py"),
+        )
+
+
+def _passing_verification() -> VerificationResult:
+    return VerificationResult(
+        command=CommandSpec(argv=("python", "-m", "pytest", "-q")),
+        exit_code=0,
+        passed=True,
+    )
+
+
+def test_evaluation_receipt_rejects_success_without_every_milestone():
+    with pytest.raises(ValueError, match="failed milestones"):
+        EvaluationResult(
+            passed=True,
+            milestones=(
+                MilestoneResult(
+                    milestone_id="inspect-workspace",
+                    kind=MilestoneKind.TOOL_CALLED,
+                    passed=False,
+                ),
+            ),
+            verification=(_passing_verification(),),
+        )
+
+
+def test_evaluation_receipt_rejects_success_with_a_policy_violation():
+    with pytest.raises(ValueError, match="cannot contain violations"):
+        EvaluationResult(
+            passed=True,
+            violations=(
+                EvaluationViolation(
+                    kind=EvaluationViolationKind.FORBIDDEN_TOOL,
+                    message="task called forbidden tool 'bash'",
+                    event_sequence=4,
+                ),
+            ),
+            verification=(_passing_verification(),),
         )
 
 

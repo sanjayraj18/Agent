@@ -590,6 +590,170 @@ class VerificationResult(BaseModel):
     stderr_tail: str = ""
 
 
+class EvaluationViolationKind(StrEnum):
+    """A deterministic reason that an evaluation contract failed."""
+
+    FILE_BOUNDARY = "file_boundary"
+    FORBIDDEN_TOOL = "forbidden_tool"
+    MISSING_MILESTONE = "missing_milestone"
+    VERIFICATION = "verification"
+
+
+class MilestoneResult(BaseModel):
+    """
+    Evidence for one required task milestone.
+
+    This records public runtime evidence only. It never stores private model
+    reasoning or chain-of-thought.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    milestone_id: str = Field(
+        min_length=3,
+        pattern=r"^[a-z0-9][a-z0-9_-]*$",
+    )
+    kind: MilestoneKind
+    passed: bool
+
+    # For the current tool_called milestone kind, these identify the event
+    # that proved the milestone occurred.
+    observed_tool_name: str | None = None
+    observed_sequence: int | None = Field(default=None, ge=1)
+
+    @field_validator("observed_tool_name")
+    @classmethod
+    def normalize_observed_tool_name(
+        cls,
+        value: str | None,
+    ) -> str | None:
+        if value is None:
+            return None
+
+        normalized = value.strip()
+
+        if not normalized:
+            raise ValueError("observed_tool_name must not be blank")
+
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> MilestoneResult:
+        if self.passed:
+            if self.observed_tool_name is None:
+                raise ValueError(
+                    "a passed milestone requires observed_tool_name"
+                )
+
+            if self.observed_sequence is None:
+                raise ValueError(
+                    "a passed milestone requires observed_sequence"
+                )
+        elif (
+            self.observed_tool_name is not None
+            or self.observed_sequence is not None
+        ):
+            raise ValueError(
+                "a failed milestone cannot contain passing evidence"
+            )
+
+        return self
+
+
+class EvaluationViolation(BaseModel):
+    """One policy or contract violation found by deterministic evaluation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: EvaluationViolationKind
+    message: str = Field(min_length=1)
+
+    # A violation caused by a tool event points to that immutable trajectory
+    # sequence. File-boundary and verification failures have no event sequence.
+    event_sequence: int | None = Field(default=None, ge=1)
+
+    @field_validator("message")
+    @classmethod
+    def reject_blank_message(cls, value: str) -> str:
+        normalized = value.strip()
+
+        if not normalized:
+            raise ValueError("evaluation violation message must not be blank")
+
+        return normalized
+
+
+class EvaluationResult(BaseModel):
+    """
+    Complete deterministic verdict for one completed benchmark attempt.
+
+    The result is an evidence receipt: it retains changed files, milestone
+    evidence, policy violations, and verification results.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    passed: bool
+    changed_paths: tuple[str, ...] = ()
+    milestones: tuple[MilestoneResult, ...] = ()
+    violations: tuple[EvaluationViolation, ...] = ()
+    verification: tuple[VerificationResult, ...] = ()
+
+    @field_validator("changed_paths")
+    @classmethod
+    def validate_changed_paths(
+        cls,
+        values: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        normalized_paths = tuple(
+            _require_relative_path(
+                value,
+                field_name="changed_paths item",
+            )
+            for value in values
+        )
+
+        if len(normalized_paths) != len(set(normalized_paths)):
+            raise ValueError("changed_paths must be unique")
+
+        return normalized_paths
+
+    @model_validator(mode="after")
+    def validate_verdict(self) -> EvaluationResult:
+        milestone_ids = [
+            milestone.milestone_id
+            for milestone in self.milestones
+        ]
+
+        if len(milestone_ids) != len(set(milestone_ids)):
+            raise ValueError("evaluation milestone IDs must be unique")
+
+        if not self.passed:
+            return self
+
+        if self.violations:
+            raise ValueError(
+                "a passed evaluation cannot contain violations"
+            )
+
+        if not self.verification:
+            raise ValueError(
+                "a passed evaluation requires verification results"
+            )
+
+        if not all(result.passed for result in self.verification):
+            raise ValueError(
+                "a passed evaluation cannot contain failed verification"
+            )
+
+        if not all(milestone.passed for milestone in self.milestones):
+            raise ValueError(
+                "a passed evaluation cannot contain failed milestones"
+            )
+
+        return self
+
+
 class BenchmarkRunResult(BaseModel):
     """One isolated attempt of one task."""
 
@@ -609,6 +773,11 @@ class BenchmarkRunResult(BaseModel):
 
     error_message: str | None = None
 
+    # Full deterministic evidence receipt. It remains None only when the agent
+    # crashed or timed out before evaluation could happen.
+
+    evaluation: EvaluationResult | None = None
+
     @model_validator(mode="after")
     def validate_success(self) -> BenchmarkRunResult:
         if self.finished_at < self.started_at:
@@ -625,7 +794,20 @@ class BenchmarkRunResult(BaseModel):
                     "a passed run cannot contain a failed verification"
                 )
 
+            if self.evaluation is not None:
+                if self.evaluation.verification != self.verification:
+                    raise ValueError(
+                        "evaluation verification must match run verification"
+                    )
+
+                if self.status is RunStatus.PASSED and not self.evaluation.passed:
+                    raise ValueError(
+                        "a passed run requires a passed evaluation"
+                    )
+
         return self
+
+    
 
 
 class ScoreboardRow(BaseModel):

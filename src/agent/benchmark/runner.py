@@ -21,6 +21,7 @@ from agent.benchmark.models import (
     ExecutedTurn,
     RunMetrics,
     RunStatus,
+    TrajectoryEntry,
     utc_now,
 )
 from agent.benchmark.trajectory import TrajectoryWriter
@@ -95,9 +96,10 @@ class BenchmarkRunner:
         trajectory = TrajectoryWriter(self._results_root, run_id)
         isolated_workspace = None
         assistant_ends: list[AssistantEnd] = []
+        trajectory_entries: list[TrajectoryEntry] = []
         error_message: str | None = None
         status = RunStatus.ERROR
-        evaluation: EvaluationOutcome | None = None
+        evaluation_outcome: EvaluationOutcome | None = None
 
         try:
             isolated_workspace = await asyncio.to_thread(
@@ -114,6 +116,14 @@ class BenchmarkRunner:
                         task.prompt,
                     ):
                         trajectory.append(event)
+                        trajectory_entries.append(
+                            TrajectoryEntry(
+                                sequence=event.seq,
+                                event_type=event.type,
+                                event=event,
+                            )
+                        )
+
                         if isinstance(event, AssistantEnd):
                             assistant_ends.append(event)
                         elif isinstance(event, ErrorEvent):
@@ -125,16 +135,17 @@ class BenchmarkRunner:
                 )
             else:
                 if error_message is None:
-                    evaluation = await evaluate_workspace(
+                    evaluation_outcome = await evaluate_workspace(
                         task,
                         isolated_workspace,
                         self._command_runner,
+                        trajectory=tuple(trajectory_entries),
                     )
-                    if evaluation.passed:
+                    if evaluation_outcome.passed:
                         status = RunStatus.PASSED
                     else:
                         status = RunStatus.FAILED
-                        error_message = evaluation.violation_message
+                        error_message = evaluation_outcome.violation_message
                 else:
                     status = RunStatus.ERROR
         except Exception as exc:
@@ -166,11 +177,16 @@ class BenchmarkRunner:
             metrics=metrics,
             trajectory=reference,
             verification=(
-                evaluation.verification
-                if evaluation is not None
+                evaluation_outcome.verification
+                if evaluation_outcome is not None
                 else ()
             ),
             error_message=error_message,
+            evaluation=(
+                evaluation_outcome.evaluation
+                if evaluation_outcome is not None
+                else None
+            ),
         )
 
 
