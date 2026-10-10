@@ -9,6 +9,7 @@ from agent.benchmark.models import (
     DiagnosisCategory,
     DiagnosisEvidence,
     DiagnosisEvidenceSource,
+    DiagnosisReport,
     DiagnosisSummary,
     EvaluationResult,
     EvaluationViolation,
@@ -358,6 +359,44 @@ def test_diagnosis_summary_rejects_incorrect_failure_pattern_math():
                     share_of_all_runs=Decimal("0.5"),
                 ),
             ),
+        )
+
+
+def test_diagnosis_report_rejects_a_summary_that_disagrees_with_runs():
+    passed_diagnosis = RunDiagnosis(
+        run_id="fix-add-bug-001",
+        task_id="fix-add-bug",
+        attempt=1,
+        run_status="passed",
+        category=DiagnosisCategory.PASSED,
+        summary="The run passed.",
+        evidence=(
+            DiagnosisEvidence(
+                source=DiagnosisEvidenceSource.RUN_STATUS,
+                message="run status: passed",
+            ),
+        ),
+        suggested_next_step="No action is needed.",
+    )
+
+    with pytest.raises(ValueError, match="summary passed_runs"):
+        DiagnosisReport(
+            config_fingerprint="a" * 64,
+            summary=DiagnosisSummary(
+                task_id="fix-add-bug",
+                total_runs=1,
+                passed_runs=0,
+                failed_runs=1,
+                failure_patterns=(
+                    FailurePattern(
+                        category=DiagnosisCategory.VERIFICATION_FAILED,
+                        count=1,
+                        share_of_failed_runs=Decimal("1"),
+                        share_of_all_runs=Decimal("1"),
+                    ),
+                ),
+            ),
+            diagnoses=(passed_diagnosis,),
         )
 
 

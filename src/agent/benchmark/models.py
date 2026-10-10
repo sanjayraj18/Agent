@@ -964,6 +964,63 @@ class DiagnosisSummary(BaseModel):
         return self
 
 
+class DiagnosisReport(BaseModel):
+    """One portable diagnosis artifact for a task/configuration benchmark run."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    config_fingerprint: str = Field(min_length=64, max_length=64)
+    summary: DiagnosisSummary
+    diagnoses: tuple[RunDiagnosis, ...] = Field(min_length=1)
+
+    @field_validator("config_fingerprint")
+    @classmethod
+    def validate_config_fingerprint(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not all(character in "0123456789abcdef" for character in normalized):
+            raise ValueError("config_fingerprint must be a SHA-256 digest")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_diagnoses_match_summary(self) -> DiagnosisReport:
+        run_ids = [diagnosis.run_id for diagnosis in self.diagnoses]
+        if len(run_ids) != len(set(run_ids)):
+            raise ValueError("diagnosis report cannot contain duplicate run IDs")
+
+        if any(
+            diagnosis.task_id != self.summary.task_id
+            for diagnosis in self.diagnoses
+        ):
+            raise ValueError("every diagnosis must match the summary task_id")
+
+        if len(self.diagnoses) != self.summary.total_runs:
+            raise ValueError("diagnoses must match summary total_runs")
+
+        passed_runs = sum(
+            diagnosis.category is DiagnosisCategory.PASSED
+            for diagnosis in self.diagnoses
+        )
+        if passed_runs != self.summary.passed_runs:
+            raise ValueError("diagnoses must match summary passed_runs")
+
+        counts: dict[DiagnosisCategory, int] = {}
+        for diagnosis in self.diagnoses:
+            if diagnosis.category is DiagnosisCategory.PASSED:
+                continue
+            counts[diagnosis.category] = counts.get(diagnosis.category, 0) + 1
+
+        pattern_counts = {
+            pattern.category: pattern.count
+            for pattern in self.summary.failure_patterns
+        }
+        if pattern_counts != counts:
+            raise ValueError(
+                "diagnoses must match summary failure pattern counts"
+            )
+
+        return self
+
+
 class ReliabilityPoint(BaseModel):
     """
     Reliability estimates for one retry budget k.

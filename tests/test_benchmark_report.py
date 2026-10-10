@@ -3,12 +3,22 @@ from decimal import Decimal
 from pathlib import Path
 
 from agent.benchmark.comparison import compare_scoreboard_rows
-from agent.benchmark.models import ModelMixEntry, ScoreboardRow
+from agent.benchmark.diagnosis import build_diagnosis_report
+from agent.benchmark.models import (
+    DiagnosisCategory,
+    ModelMixEntry,
+    RunDiagnosis,
+    RunStatus,
+    ScoreboardRow,
+)
 from agent.benchmark.report import (
+    read_diagnosis_report,
     read_scoreboard,
+    render_diagnosis_markdown,
     render_comparison_markdown,
     render_markdown,
     write_comparison,
+    write_diagnosis_report,
     write_scoreboard,
 )
 
@@ -62,13 +72,52 @@ def _row(
     )
 
 
+def _diagnosis_report():
+    diagnoses = (
+        RunDiagnosis(
+            run_id="fix-add-bug-001",
+            task_id="fix-add-bug",
+            attempt=1,
+            run_status=RunStatus.PASSED,
+            category=DiagnosisCategory.PASSED,
+            summary="The run passed.",
+            evidence=(
+                {
+                    "source": "run_status",
+                    "message": "run status: passed",
+                },
+            ),
+            suggested_next_step="No action is needed.",
+        ),
+        RunDiagnosis(
+            run_id="fix-add-bug-002",
+            task_id="fix-add-bug",
+            attempt=2,
+            run_status=RunStatus.FAILED,
+            category=DiagnosisCategory.VERIFICATION_FAILED,
+            summary="A verification command failed.",
+            evidence=(
+                {
+                    "source": "verification",
+                    "message": "python -m pytest -q exited with code 1",
+                },
+            ),
+            suggested_next_step="Read the failed test output.",
+        ),
+    )
+    return build_diagnosis_report(
+        diagnoses,
+        config_fingerprint="d" * 64,
+    )
+
+
 def test_scoreboard_writes_json_and_readable_markdown(tmp_path: Path):
     markdown_path = tmp_path / "scoreboard.md"
     write_scoreboard(markdown_path, (_row(),))
 
     assert "fix-add-bug" in markdown_path.read_text(encoding="utf-8")
     assert read_scoreboard(markdown_path.with_suffix(".json")) == (_row(),)
-    assert "Pass rate" in render_markdown((_row(),))
+    assert "Pass¹" in render_markdown((_row(),))
 
 
 def test_scoreboard_markdown_distinguishes_strategy_route_and_actual_mix():
@@ -80,6 +129,22 @@ def test_scoreboard_markdown_distinguishes_strategy_route_and_actual_mix():
         "openai / gpt-5.6-terra |"
     ) in markdown
     assert "openai / gpt-5.6-terra × 6 (strong-terra-high)" in markdown
+
+
+def test_diagnosis_report_writes_json_and_actionable_markdown(tmp_path: Path):
+    markdown_path = tmp_path / "diagnosis.md"
+    diagnosis_report = _diagnosis_report()
+
+    write_diagnosis_report(markdown_path, diagnosis_report)
+
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert read_diagnosis_report(markdown_path.with_suffix(".json")) == diagnosis_report
+    assert "# Agent benchmark diagnosis" in markdown
+    assert "| verification failed | 1 | 100.00% | 50.00% |" in markdown
+    assert "fix-add-bug-002" in markdown
+    assert "Read the failed test output." in render_diagnosis_markdown(
+        diagnosis_report
+    )
 
 
 def test_comparison_markdown_shows_deltas_and_writes_json_evidence(

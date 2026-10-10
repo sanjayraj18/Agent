@@ -5,6 +5,7 @@ import pytest
 
 from agent.benchmark.diagnosis import (
     DiagnosisError,
+    build_diagnosis_report,
     diagnose_run,
     summarize_diagnoses,
 )
@@ -245,3 +246,22 @@ def test_summarize_diagnoses_rejects_mixed_tasks_and_duplicate_runs():
 
     with pytest.raises(DiagnosisError, match="duplicate run IDs"):
         summarize_diagnoses((first, first))
+
+
+def test_build_diagnosis_report_keeps_runs_and_summary_together():
+    diagnoses = (
+        _diagnosis(run_id="run-1", category=DiagnosisCategory.PASSED),
+        _diagnosis(
+            run_id="run-2",
+            category=DiagnosisCategory.VERIFICATION_FAILED,
+        ),
+    )
+
+    report = build_diagnosis_report(
+        diagnoses,
+        config_fingerprint="a" * 64,
+    )
+
+    assert report.summary.task_id == "fix-add-bug"
+    assert report.summary.failed_runs == 1
+    assert report.diagnoses == diagnoses

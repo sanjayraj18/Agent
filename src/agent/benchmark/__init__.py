@@ -10,6 +10,7 @@ from agent.benchmark.comparison import (
 )
 from agent.benchmark.diagnosis import (
     DiagnosisError,
+    build_diagnosis_report,
     diagnose_run,
     summarize_diagnoses,
 )
@@ -21,6 +22,7 @@ from agent.benchmark.models import (
     DiagnosisCategory,
     DiagnosisEvidence,
     DiagnosisEvidenceSource,
+    DiagnosisReport,
     DiagnosisSummary,
     EvaluationResult,
     EvaluationViolation,
@@ -51,6 +53,7 @@ __all__ = [
     "DiagnosisError",
     "DiagnosisEvidence",
     "DiagnosisEvidenceSource",
+    "DiagnosisReport",
     "DiagnosisSummary",
     "EvaluationResult",
     "EvaluationViolation",
@@ -64,5 +67,6 @@ __all__ = [
     "TaskCategory",
     "compare_scoreboard_rows",
     "diagnose_run",
+    "build_diagnosis_report",
     "summarize_diagnoses",
 ]

@@ -7,7 +7,11 @@ from decimal import Decimal
 from pathlib import Path
 
 from agent.benchmark.comparison import BenchmarkComparison
-from agent.benchmark.models import BenchmarkRunResult, ScoreboardRow
+from agent.benchmark.models import (
+    BenchmarkRunResult,
+    DiagnosisReport,
+    ScoreboardRow,
+)
 
 
 def write_run_results(
@@ -28,6 +32,16 @@ def write_scoreboard(path: Path, rows: tuple[ScoreboardRow, ...]) -> None:
         {"rows": [row.model_dump(mode="json") for row in rows]},
     )
     path.write_text(render_markdown(rows), encoding="utf-8")
+
+
+def write_diagnosis_report(path: Path, report: DiagnosisReport) -> None:
+    """Persist portable JSON evidence and a readable diagnosis report."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(path.with_suffix(".json"), report.model_dump(mode="json"))
+    path.write_text(
+        render_diagnosis_markdown(report),
+        encoding="utf-8",
+    )
 
 
 def write_comparison(
@@ -65,15 +79,36 @@ def read_scoreboard(path: Path) -> tuple[ScoreboardRow, ...]:
         raise ValueError(f"{path}: invalid scoreboard row ({exc})") from exc
 
 
+def read_diagnosis_report(path: Path) -> DiagnosisReport:
+    """Load the JSON evidence associated with one diagnosis Markdown report."""
+    try:
+        decoded = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(
+            f"could not read diagnosis report {path}: {exc}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"{path}: invalid diagnosis JSON ({exc})"
+        ) from exc
+
+    try:
+        return DiagnosisReport.model_validate(decoded)
+    except Exception as exc:
+        raise ValueError(
+            f"{path}: invalid diagnosis report ({exc})"
+        ) from exc
+
+
 def render_markdown(rows: tuple[ScoreboardRow, ...]) -> str:
     lines = [
         "# Agent benchmark scoreboard",
         "",
         "| Task | Strategy | Route | Configured provider / model | "
-        "Actual model mix | Runs | Passed | Pass rate | Mean cost | "
-        "Mean tokens | Mean turns | Mean duration |",
+        "Actual model mix | Runs | Passed | Pass¹ | Pass³ | Pass@3 | "
+        "Mean cost | Mean tokens | Mean turns | Mean duration |",
         "| --- | --- | --- | --- | --- | ---: | ---: | ---: | "
-        "---: | ---: | ---: | ---: |",
+        "---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     for row in rows:
@@ -87,6 +122,88 @@ def render_markdown(rows: tuple[ScoreboardRow, ...]) -> str:
             "",
         ]
     )
+    return "\n".join(lines)
+
+
+def render_diagnosis_markdown(report: DiagnosisReport) -> str:
+    """Render deterministic failure evidence for one task/configuration run."""
+    summary = report.summary
+    lines = [
+        "# Agent benchmark diagnosis",
+        "",
+        f"Task: `{summary.task_id}`",
+        f"Configuration fingerprint: `{report.config_fingerprint}`",
+        "",
+        "## Outcome",
+        "",
+        "| Runs | Passed | Failed |",
+        "| ---: | ---: | ---: |",
+        f"| {summary.total_runs} | {summary.passed_runs} | "
+        f"{summary.failed_runs} |",
+        "",
+        "## Failure patterns",
+        "",
+    ]
+
+    if summary.failure_patterns:
+        lines.extend(
+            [
+                "| Category | Count | Share of failures | Share of all runs |",
+                "| --- | ---: | ---: | ---: |",
+            ]
+        )
+        for pattern in summary.failure_patterns:
+            lines.append(
+                "| "
+                f"{pattern.category.value.replace('_', ' ')} | "
+                f"{pattern.count} | {pattern.share_of_failed_runs:.2%} | "
+                f"{pattern.share_of_all_runs:.2%} |"
+            )
+    else:
+        lines.append("No failed attempts were recorded.")
+
+    failed_diagnoses = tuple(
+        diagnosis
+        for diagnosis in report.diagnoses
+        if diagnosis.category.value != "passed"
+    )
+    lines.extend(["", "## Individual failures", ""])
+
+    if not failed_diagnoses:
+        lines.append("All recorded attempts passed.")
+    else:
+        for diagnosis in failed_diagnoses:
+            lines.extend(
+                [
+                    f"### `{diagnosis.run_id}` — "
+                    f"{diagnosis.category.value.replace('_', ' ')}",
+                    "",
+                    _single_line(diagnosis.summary),
+                    "",
+                    "**Evidence**",
+                    "",
+                ]
+            )
+            for evidence in diagnosis.evidence:
+                event_suffix = (
+                    f" (event {evidence.event_sequence})"
+                    if evidence.event_sequence is not None
+                    else ""
+                )
+                lines.append(
+                    f"- `{evidence.source.value}`: "
+                    f"{_single_line(evidence.message)}{event_suffix}"
+                )
+            lines.extend(
+                [
+                    "",
+                    "**Suggested next step**",
+                    "",
+                    _single_line(diagnosis.suggested_next_step),
+                    "",
+                ]
+            )
+
     return "\n".join(lines)
 
 
@@ -151,6 +268,7 @@ def _scoreboard_line(row: ScoreboardRow) -> str:
         f"{row.mean_duration_seconds:.2f}s |"
     )
 
+
 def _format_reliability(
     row: ScoreboardRow,
     *,
@@ -173,6 +291,11 @@ def _format_reliability(
             )
 
     return ("n/a", "n/a")
+
+
+def _single_line(value: str) -> str:
+    """Keep external error text from breaking the Markdown structure."""
+    return " ".join(value.split())
 
 
 def _comparison_baseline_line(row: ScoreboardRow) -> str:

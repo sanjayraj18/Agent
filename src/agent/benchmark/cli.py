@@ -12,15 +12,18 @@ from agent.benchmark.comparison import (
     BenchmarkComparison,
     compare_scoreboard_rows,
 )
+from agent.benchmark.diagnosis import build_diagnosis_report, diagnose_run
 from agent.benchmark.git_info import read_git_provenance, require_clean_tree
 from agent.benchmark.images import DockerCommandExecutor
 from agent.benchmark.models import (
     BenchmarkRunConfig,
     BenchmarkRunResult,
+    DiagnosisReport,
     ScoreboardRow,
 )
 from agent.benchmark.report import (
     read_scoreboard,
+    write_diagnosis_report,
     write_comparison,
     write_run_results,
     write_scoreboard,
@@ -34,8 +37,10 @@ from agent.events import Event
 class BenchmarkExecution:
     results: tuple[BenchmarkRunResult, ...]
     scoreboard: ScoreboardRow
+    diagnosis_report: DiagnosisReport
     results_path: Path
     scoreboard_path: Path
+    diagnosis_path: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,8 +119,14 @@ async def run_benchmark(
 
     result_directory = results_root / "runs" / task.task_id / config.fingerprint
     results_path = result_directory / "results.json"
+    diagnosis_path = result_directory / "diagnosis.md"
     scoreboard_path = results_root / "scoreboard.md"
+    diagnosis_report = build_diagnosis_report(
+        (diagnose_run(result) for result in results),
+        config_fingerprint=config.fingerprint,
+    )
     write_run_results(results_path, results)
+    write_diagnosis_report(diagnosis_path, diagnosis_report)
     scoreboard_json = scoreboard_path.with_suffix(".json")
     existing_rows = read_scoreboard(scoreboard_json) if scoreboard_json.exists() else ()
     row_key = (
@@ -141,8 +152,10 @@ async def run_benchmark(
     return BenchmarkExecution(
         results=results,
         scoreboard=scoreboard,
+        diagnosis_report=diagnosis_report,
         results_path=results_path,
         scoreboard_path=scoreboard_path,
+        diagnosis_path=diagnosis_path,
     )
 
 

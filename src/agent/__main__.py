@@ -1248,6 +1248,7 @@ def main() -> None:
         )
         print(f"results: {execution.results_path}")
         print(f"scoreboard: {execution.scoreboard_path}")
+        print(f"diagnosis: {execution.diagnosis_path}")
         return
 
     raise SystemExit(

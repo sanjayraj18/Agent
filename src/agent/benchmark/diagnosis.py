@@ -11,6 +11,7 @@ from agent.benchmark.models import (
     DiagnosisCategory,
     DiagnosisEvidence,
     DiagnosisEvidenceSource,
+    DiagnosisReport,
     DiagnosisSummary,
     EvaluationViolation,
     EvaluationViolationKind,
@@ -162,6 +163,20 @@ def summarize_diagnoses(
         passed_runs=passed_runs,
         failed_runs=failed_runs,
         failure_patterns=patterns,
+    )
+
+
+def build_diagnosis_report(
+    diagnoses: Iterable[RunDiagnosis],
+    *,
+    config_fingerprint: str,
+) -> DiagnosisReport:
+    """Bind per-run diagnoses and their aggregate to one configuration."""
+    values = tuple(diagnoses)
+    return DiagnosisReport(
+        config_fingerprint=config_fingerprint,
+        summary=summarize_diagnoses(values),
+        diagnoses=values,
     )
 
 
