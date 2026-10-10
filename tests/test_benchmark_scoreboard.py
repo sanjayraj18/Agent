@@ -101,6 +101,11 @@ def test_scoreboard_calculates_pass_rate_and_variance():
     )
 
     assert row.pass_rate == Decimal(2) / Decimal(3)
+    assert row.reliability is not None
+    assert row.reliability.pass_one == Decimal(2) / Decimal(3)
+    assert row.reliability.points[0].k == 3
+    assert row.reliability.points[0].pass_all == Decimal("0")
+    assert row.reliability.points[0].pass_at_least_one == Decimal("1")
     assert row.duration_standard_deviation_seconds > 0
     assert row.mean_cost_usd == Decimal("0.01")
 

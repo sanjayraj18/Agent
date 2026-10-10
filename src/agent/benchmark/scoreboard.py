@@ -11,13 +11,23 @@ from agent.benchmark.models import (
     BenchmarkRunResult,
     ExecutedTurn,
     ModelMixEntry,
+    ReliabilityPoint,
+    ReliabilitySummary,
     RunStatus,
     ScoreboardRow,
+)
+from agent.benchmark.reliability import (
+    pass_all_k,
+    pass_at_k,
+    pass_one,
 )
 
 
 class ScoreboardError(ValueError):
     """The supplied attempts cannot form one comparable scoreboard row."""
+
+
+RELIABILITY_RETRY_BUDGET = 3
 
 
 def build_scoreboard_row(
@@ -49,6 +59,11 @@ def build_scoreboard_row(
     token_counts = [Decimal(result.metrics.total_tokens) for result in attempts]
     turns = [Decimal(result.metrics.turns) for result in attempts]
 
+    reliability = _build_reliability_summary(
+        attempts=len(attempts),
+        passed_attempts=passed,
+    )
+
     return ScoreboardRow(
         task_id=attempts[0].task_id,
         provider=config.provider,
@@ -71,6 +86,50 @@ def build_scoreboard_row(
         mean_turns=_mean(turns),
         mean_cost_usd=mean_cost,
         cost_standard_deviation_usd=cost_deviation,
+        reliability=reliability,
+    )
+
+
+def _build_reliability_summary(
+    *,
+    attempts: int,
+    passed_attempts: int,
+) -> ReliabilitySummary:
+    """
+    Build an auditable repeated-run reliability receipt.
+
+    pass_one answers: “Will one normal attempt pass?”
+    pass^3 answers: “Will all three attempts pass?”
+    pass@3 answers: “If we try up to three times, will one pass?”
+    """
+    points: tuple[ReliabilityPoint, ...] = ()
+
+    if attempts >= RELIABILITY_RETRY_BUDGET:
+        k = RELIABILITY_RETRY_BUDGET
+        points = (
+            ReliabilityPoint(
+                k=k,
+                pass_all=pass_all_k(
+                    attempts=attempts,
+                    passed_attempts=passed_attempts,
+                    k=k,
+                ),
+                pass_at_least_one=pass_at_k(
+                    attempts=attempts,
+                    passed_attempts=passed_attempts,
+                    k=k,
+                ),
+            ),
+        )
+
+    return ReliabilitySummary(
+        attempts=attempts,
+        passed_attempts=passed_attempts,
+        pass_one=pass_one(
+            attempts=attempts,
+            passed_attempts=passed_attempts,
+        ),
+        points=points,
     )
 
 

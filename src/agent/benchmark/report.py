@@ -135,15 +135,44 @@ def render_comparison_markdown(
 
 
 def _scoreboard_line(row: ScoreboardRow) -> str:
+    pass_all, pass_at_least_one = _format_reliability(
+        row,
+        k=3,
+    )
+
     return (
         "| "
         f"{row.task_id} | {row.strategy_id} | {row.route_id} | "
         f"{row.provider} / {row.model} | {_format_model_mix(row)} | "
         f"{row.attempts} | {row.passed_attempts} | "
-        f"{row.pass_rate:.2%} | {_format_cost(row.mean_cost_usd)} | "
+        f"{row.pass_rate:.2%} | {pass_all} | {pass_at_least_one} | "
+        f"{_format_cost(row.mean_cost_usd)} | "
         f"{row.mean_tokens:.0f} | {row.mean_turns:.2f} | "
         f"{row.mean_duration_seconds:.2f}s |"
     )
+
+def _format_reliability(
+    row: ScoreboardRow,
+    *,
+    k: int,
+) -> tuple[str, str]:
+    """
+    Return readable pass^k and pass@k values from recorded evidence.
+
+    Historical scoreboards may not have reliability data, so we never
+    pretend that a missing measurement is zero.
+    """
+    if row.reliability is None:
+        return ("not recorded", "not recorded")
+
+    for point in row.reliability.points:
+        if point.k == k:
+            return (
+                f"{point.pass_all:.2%}",
+                f"{point.pass_at_least_one:.2%}",
+            )
+
+    return ("n/a", "n/a")
 
 
 def _comparison_baseline_line(row: ScoreboardRow) -> str:

@@ -13,6 +13,7 @@ from agent.benchmark.models import (
     MilestoneKind,
     MilestoneResult,
     MilestoneSpec,
+    ReliabilitySummary,
     RunMetrics,
     ScoreboardRow,
     TaskCategory,
@@ -284,6 +285,31 @@ def test_scoreboard_row_requires_the_mathematically_correct_pass_rate():
             attempts=3,
             passed_attempts=2,
             pass_rate=Decimal("1"),
+            mean_duration_seconds=Decimal("1"),
+            duration_standard_deviation_seconds=Decimal("0"),
+            mean_tokens=Decimal("1"),
+            token_standard_deviation=Decimal("0"),
+            mean_turns=Decimal("1"),
+        )
+
+
+def test_scoreboard_row_rejects_a_reliability_receipt_for_different_outcomes():
+    with pytest.raises(ValueError, match="reliability passed_attempts"):
+        ScoreboardRow(
+            task_id="fix-add-bug",
+            provider="openai",
+            model="gpt-5.6-terra",
+            agent_revision="a" * 40,
+            container_image=_image(),
+            config_fingerprint="b" * 64,
+            attempts=3,
+            passed_attempts=2,
+            pass_rate=Decimal(2) / Decimal(3),
+            reliability=ReliabilitySummary(
+                attempts=3,
+                passed_attempts=3,
+                pass_one=Decimal("1"),
+            ),
             mean_duration_seconds=Decimal("1"),
             duration_standard_deviation_seconds=Decimal("0"),
             mean_tokens=Decimal("1"),

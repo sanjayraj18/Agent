@@ -807,7 +807,74 @@ class BenchmarkRunResult(BaseModel):
 
         return self
 
-    
+
+class ReliabilityPoint(BaseModel):
+    """
+    Reliability estimates for one retry budget k.
+
+    ``pass_all`` represents pass^k: every selected attempt succeeds.
+    ``pass_at_least_one`` represents pass@k: at least one succeeds.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    k: int = Field(ge=1)
+    pass_all: Decimal = Field(ge=Decimal("0"), le=Decimal("1"))
+    pass_at_least_one: Decimal = Field(
+        ge=Decimal("0"),
+        le=Decimal("1"),
+    )
+
+    @model_validator(mode="after")
+    def validate_probability_order(self) -> ReliabilityPoint:
+        if self.pass_all > self.pass_at_least_one:
+            raise ValueError("pass_all cannot exceed pass_at_least_one")
+
+        return self
+
+
+class ReliabilitySummary(BaseModel):
+    """Reliability evidence derived from repeated isolated attempts."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    attempts: int = Field(ge=1)
+    passed_attempts: int = Field(ge=0)
+    pass_one: Decimal = Field(ge=Decimal("0"), le=Decimal("1"))
+    points: tuple[ReliabilityPoint, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_summary(self) -> ReliabilitySummary:
+        if self.passed_attempts > self.attempts:
+            raise ValueError("passed_attempts cannot exceed attempts")
+
+        expected_pass_one = Decimal(self.passed_attempts) / Decimal(
+            self.attempts
+        )
+        if self.pass_one != expected_pass_one:
+            raise ValueError(
+                "pass_one must equal passed_attempts / attempts"
+            )
+
+        point_ks = [point.k for point in self.points]
+        if len(point_ks) != len(set(point_ks)):
+            raise ValueError("reliability point k values must be unique")
+
+        for point in self.points:
+            if point.k > self.attempts:
+                raise ValueError(
+                    "reliability point k cannot exceed attempts"
+                )
+
+            if point.pass_all > self.pass_one:
+                raise ValueError("pass_all cannot exceed pass_one")
+
+            if point.pass_at_least_one < self.pass_one:
+                raise ValueError(
+                    "pass_at_least_one cannot be below pass_one"
+                )
+
+        return self
 
 
 class ScoreboardRow(BaseModel):
@@ -844,6 +911,10 @@ class ScoreboardRow(BaseModel):
     passed_attempts: int = Field(ge=0)
     pass_rate: Decimal = Field(ge=Decimal("0"), le=Decimal("1"))
 
+    # Optional for backward-compatible reading of historical scoreboards.
+    # New Phase 4 scoreboards will always populate this receipt.
+    reliability: ReliabilitySummary | None = None
+
     mean_duration_seconds: Decimal = Field(ge=Decimal("0"))
     duration_standard_deviation_seconds: Decimal = Field(
         ge=Decimal("0")
@@ -875,6 +946,22 @@ class ScoreboardRow(BaseModel):
             raise ValueError(
                 "pass_rate must equal passed_attempts / attempts"
             )
+
+        if self.reliability is not None:
+            if self.reliability.attempts != self.attempts:
+                raise ValueError(
+                    "reliability attempts must match scoreboard"
+                )
+
+            if self.reliability.passed_attempts != self.passed_attempts:
+                raise ValueError(
+                    "reliability passed_attempts must match scoreboard"
+                )
+
+            if self.reliability.pass_one != self.pass_rate:
+                raise ValueError(
+                    "reliability pass_one must match scoreboard pass_rate"
+                )
 
         if not all(
             character in "0123456789abcdef"
