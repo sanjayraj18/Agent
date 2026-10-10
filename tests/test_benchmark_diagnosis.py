@@ -1,12 +1,19 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from agent.benchmark.diagnosis import diagnose_run
+import pytest
+
+from agent.benchmark.diagnosis import (
+    DiagnosisError,
+    diagnose_run,
+    summarize_diagnoses,
+)
 from agent.benchmark.models import (
     BenchmarkRunResult,
     CommandSpec,
     DiagnosisCategory,
     DiagnosisEvidenceSource,
+    RunDiagnosis,
     EvaluationResult,
     EvaluationViolation,
     EvaluationViolationKind,
@@ -147,3 +154,94 @@ def test_diagnose_run_keeps_an_underspecified_failure_honest():
     diagnosis = diagnose_run(_result(status=RunStatus.FAILED))
 
     assert diagnosis.category is DiagnosisCategory.UNKNOWN_FAILURE
+
+
+def _diagnosis(
+    *,
+    run_id: str,
+    category: DiagnosisCategory,
+    task_id: str = "fix-add-bug",
+) -> RunDiagnosis:
+    if category is DiagnosisCategory.PASSED:
+        status = RunStatus.PASSED
+    elif category is DiagnosisCategory.TIMED_OUT:
+        status = RunStatus.TIMED_OUT
+    elif category is DiagnosisCategory.EXECUTION_ERROR:
+        status = RunStatus.ERROR
+    else:
+        status = RunStatus.FAILED
+
+    return RunDiagnosis(
+        run_id=run_id,
+        task_id=task_id,
+        attempt=1,
+        run_status=status,
+        category=category,
+        summary=f"{category.value} summary",
+        evidence=(
+            {
+                "source": "run_status",
+                "message": f"run status: {status.value}",
+            },
+        ),
+        suggested_next_step="Inspect recorded evidence.",
+    )
+
+
+def test_summarize_diagnoses_counts_and_orders_failure_patterns():
+    summary = summarize_diagnoses(
+        (
+            _diagnosis(run_id="run-1", category=DiagnosisCategory.PASSED),
+            _diagnosis(run_id="run-2", category=DiagnosisCategory.PASSED),
+            _diagnosis(run_id="run-3", category=DiagnosisCategory.PASSED),
+            _diagnosis(
+                run_id="run-4",
+                category=DiagnosisCategory.VERIFICATION_FAILED,
+            ),
+            _diagnosis(
+                run_id="run-5",
+                category=DiagnosisCategory.VERIFICATION_FAILED,
+            ),
+            _diagnosis(
+                run_id="run-6",
+                category=DiagnosisCategory.POLICY_VIOLATION,
+            ),
+        )
+    )
+
+    assert summary.total_runs == 6
+    assert summary.passed_runs == 3
+    assert summary.failed_runs == 3
+    assert [
+        (pattern.category, pattern.count)
+        for pattern in summary.failure_patterns
+    ] == [
+        (DiagnosisCategory.VERIFICATION_FAILED, 2),
+        (DiagnosisCategory.POLICY_VIOLATION, 1),
+    ]
+    assert summary.failure_patterns[0].share_of_failed_runs == Decimal(2) / Decimal(3)
+    assert summary.failure_patterns[0].share_of_all_runs == Decimal(2) / Decimal(6)
+
+
+def test_summarize_diagnoses_keeps_a_perfect_run_set_empty_of_failures():
+    summary = summarize_diagnoses(
+        (_diagnosis(run_id="run-1", category=DiagnosisCategory.PASSED),)
+    )
+
+    assert summary.failed_runs == 0
+    assert summary.failure_patterns == ()
+
+
+def test_summarize_diagnoses_rejects_mixed_tasks_and_duplicate_runs():
+    first = _diagnosis(run_id="run-1", category=DiagnosisCategory.PASSED)
+    other_task = _diagnosis(
+        run_id="run-2",
+        task_id="repair-label-parser",
+        category=DiagnosisCategory.PASSED,
+    )
+
+    with pytest.raises(DiagnosisError, match="only one task"):
+        summarize_diagnoses((first, other_task))
+
+    with pytest.raises(DiagnosisError, match="duplicate run IDs"):
+        summarize_diagnoses((first, first))

@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Iterable
+from decimal import Decimal
+
 from agent.benchmark.models import (
     BenchmarkRunResult,
     DiagnosisCategory,
     DiagnosisEvidence,
     DiagnosisEvidenceSource,
+    DiagnosisSummary,
     EvaluationViolation,
     EvaluationViolationKind,
+    FailurePattern,
     RunDiagnosis,
     RunStatus,
     VerificationResult,
 )
+
+
+class DiagnosisError(ValueError):
+    """The supplied diagnosis records cannot form one trustworthy summary."""
 
 
 def diagnose_run(result: BenchmarkRunResult) -> RunDiagnosis:
@@ -103,6 +113,55 @@ def diagnose_run(result: BenchmarkRunResult) -> RunDiagnosis:
             "Inspect the full trajectory and add deterministic evidence before "
             "drawing a stronger conclusion."
         ),
+    )
+
+
+def summarize_diagnoses(
+    diagnoses: Iterable[RunDiagnosis],
+) -> DiagnosisSummary:
+    """Aggregate repeated attempts of exactly one task into failure patterns."""
+    values = tuple(diagnoses)
+    if not values:
+        raise DiagnosisError("at least one diagnosis is required")
+
+    task_ids = {diagnosis.task_id for diagnosis in values}
+    if len(task_ids) != 1:
+        raise DiagnosisError("a diagnosis summary may contain only one task")
+
+    run_ids = [diagnosis.run_id for diagnosis in values]
+    if len(run_ids) != len(set(run_ids)):
+        raise DiagnosisError("a diagnosis summary cannot contain duplicate run IDs")
+
+    passed_runs = sum(
+        diagnosis.category is DiagnosisCategory.PASSED
+        for diagnosis in values
+    )
+    failed_runs = len(values) - passed_runs
+    counts = Counter(
+        diagnosis.category
+        for diagnosis in values
+        if diagnosis.category is not DiagnosisCategory.PASSED
+    )
+
+    patterns = tuple(
+        FailurePattern(
+            category=category,
+            count=count,
+            share_of_failed_runs=Decimal(count) / Decimal(failed_runs),
+            share_of_all_runs=Decimal(count) / Decimal(len(values)),
+        )
+        for category, count in sorted(
+            counts.items(),
+            key=lambda item: (-item[1], item[0].value),
+        )
+    )
+
+    return DiagnosisSummary(
+        task_id=values[0].task_id,
+        total_runs=len(values),
+        passed_runs=passed_runs,
+        failed_runs=failed_runs,
+        failure_patterns=patterns,
     )
 
 
