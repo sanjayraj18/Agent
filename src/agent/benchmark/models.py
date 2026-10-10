@@ -808,6 +808,90 @@ class BenchmarkRunResult(BaseModel):
         return self
 
 
+class DiagnosisCategory(StrEnum):
+    """The primary, evidence-backed explanation for one benchmark run."""
+
+    PASSED = "passed"
+    TIMED_OUT = "timed_out"
+    EXECUTION_ERROR = "execution_error"
+    POLICY_VIOLATION = "policy_violation"
+    MISSING_MILESTONE = "missing_milestone"
+    VERIFICATION_FAILED = "verification_failed"
+    UNKNOWN_FAILURE = "unknown_failure"
+
+
+class DiagnosisEvidenceSource(StrEnum):
+    """The persisted benchmark record from which one diagnosis fact came."""
+
+    RUN_STATUS = "run_status"
+    ERROR_MESSAGE = "error_message"
+    EVALUATION_VIOLATION = "evaluation_violation"
+    VERIFICATION = "verification"
+
+
+class DiagnosisEvidence(BaseModel):
+    """One small, public piece of evidence supporting a diagnosis."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    source: DiagnosisEvidenceSource
+    message: str = Field(min_length=1)
+    event_sequence: int | None = Field(default=None, ge=1)
+
+    @field_validator("message")
+    @classmethod
+    def reject_blank_message(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("diagnosis evidence message must not be blank")
+        return normalized
+
+
+class RunDiagnosis(BaseModel):
+    """Read-only explanation of one completed benchmark attempt."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    run_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=3)
+    attempt: int = Field(ge=1)
+    run_status: RunStatus
+    category: DiagnosisCategory
+    summary: str = Field(min_length=1)
+    evidence: tuple[DiagnosisEvidence, ...] = Field(min_length=1)
+    suggested_next_step: str = Field(min_length=1)
+
+    @field_validator("summary", "suggested_next_step")
+    @classmethod
+    def reject_blank_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("diagnosis text must not be blank")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_status_category(self) -> RunDiagnosis:
+        if self.run_status is RunStatus.PASSED:
+            if self.category is not DiagnosisCategory.PASSED:
+                raise ValueError(
+                    "a passed run must have the passed diagnosis category"
+                )
+        elif self.category is DiagnosisCategory.PASSED:
+            raise ValueError(
+                "a non-passed run cannot have the passed diagnosis category"
+            )
+
+        if (
+            self.run_status is RunStatus.TIMED_OUT
+            and self.category is not DiagnosisCategory.TIMED_OUT
+        ):
+            raise ValueError(
+                "a timed-out run must have the timed_out diagnosis category"
+            )
+
+        return self
+
+
 class ReliabilityPoint(BaseModel):
     """
     Reliability estimates for one retry budget k.

@@ -6,6 +6,9 @@ from agent.benchmark.models import (
     BenchmarkRunConfig,
     BenchmarkTask,
     CommandSpec,
+    DiagnosisCategory,
+    DiagnosisEvidence,
+    DiagnosisEvidenceSource,
     EvaluationResult,
     EvaluationViolation,
     EvaluationViolationKind,
@@ -15,6 +18,7 @@ from agent.benchmark.models import (
     MilestoneSpec,
     ReliabilitySummary,
     RunMetrics,
+    RunDiagnosis,
     ScoreboardRow,
     TaskCategory,
     TrajectoryEntry,
@@ -315,6 +319,25 @@ def test_scoreboard_row_rejects_a_reliability_receipt_for_different_outcomes():
             mean_tokens=Decimal("1"),
             token_standard_deviation=Decimal("0"),
             mean_turns=Decimal("1"),
+        )
+
+
+def test_run_diagnosis_rejects_a_success_category_for_a_failed_run():
+    with pytest.raises(ValueError, match="non-passed run"):
+        RunDiagnosis(
+            run_id="fix-add-bug-001",
+            task_id="fix-add-bug",
+            attempt=1,
+            run_status="failed",
+            category=DiagnosisCategory.PASSED,
+            summary="This cannot be true.",
+            evidence=(
+                DiagnosisEvidence(
+                    source=DiagnosisEvidenceSource.RUN_STATUS,
+                    message="run status: failed",
+                ),
+            ),
+            suggested_next_step="Inspect the result.",
         )
 
 
