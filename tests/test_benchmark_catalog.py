@@ -1,9 +1,25 @@
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
 from agent.benchmark.catalog import BenchmarkCatalog, BenchmarkCatalogError
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+BENCHMARK_ROOT = PROJECT_ROOT / "benchmarks"
+INITIAL_TASK_IDS = {
+    "fix-add-bug",
+    "fix-clamp-boundary",
+    "investigate-cache-setting",
+    "rename-formatter-api",
+    "repair-label-parser",
+    "respect-protected-test",
+    "update-auth-header",
+    "verify-tax-rounding",
+}
 
 
 def _task() -> dict[str, object]:
@@ -86,3 +102,29 @@ def test_list_tasks_validates_every_task_fixture(tmp_path: Path):
 
     with pytest.raises(BenchmarkCatalogError, match="fixture is not a directory"):
         BenchmarkCatalog(tmp_path).list_tasks()
+
+
+def test_repository_catalog_loads_the_complete_initial_task_suite():
+    catalog = BenchmarkCatalog(BENCHMARK_ROOT)
+    tasks = catalog.list_tasks()
+
+    assert {task.task_id for task in tasks} == INITIAL_TASK_IDS
+    assert all(task.allowed_changed_paths for task in tasks)
+    assert all(task.milestones for task in tasks)
+    assert all(task.verification for task in tasks)
+
+
+@pytest.mark.parametrize("task_id", sorted(INITIAL_TASK_IDS))
+def test_each_initial_fixture_starts_unsolved(task_id: str):
+    task = BenchmarkCatalog(BENCHMARK_ROOT).load_task(task_id)
+    fixture = BENCHMARK_ROOT / task.fixture
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q"],
+        cwd=fixture,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0, result.stdout + result.stderr

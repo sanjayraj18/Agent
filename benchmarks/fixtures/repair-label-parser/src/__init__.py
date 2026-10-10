@@ -1,0 +1,1 @@
+"""Label-parser benchmark fixture."""

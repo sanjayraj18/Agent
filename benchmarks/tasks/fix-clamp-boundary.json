@@ -1,0 +1,30 @@
+{
+  "task_id": "fix-clamp-boundary",
+  "title": "Fix an upper-bound clamp bug",
+  "category": "bug_fix",
+  "prompt": "Inspect the repository, fix the clamp behavior in src/bounds.py, and run the tests. Only modify the implementation file.",
+  "fixture": "fixtures/fix-clamp-boundary",
+  "verification": [
+    {
+      "argv": ["python", "-m", "pytest", "-q"],
+      "timeout_seconds": 120
+    }
+  ],
+  "timeout_seconds": 600,
+  "allowed_changed_paths": ["src/bounds.py"],
+  "milestones": [
+    {
+      "milestone_id": "inspect-workspace",
+      "description": "Inspect the workspace before changing the clamp implementation.",
+      "kind": "tool_called",
+      "tool_names": ["read_file", "grep", "glob"]
+    },
+    {
+      "milestone_id": "run-verification",
+      "description": "Use the shell to verify the clamp fix before finishing.",
+      "kind": "tool_called",
+      "tool_names": ["bash"]
+    }
+  ],
+  "forbidden_tool_names": []
+}

@@ -1,0 +1,30 @@
+{
+  "task_id": "verify-tax-rounding",
+  "title": "Fix and verify a tax percentage calculation",
+  "category": "verification",
+  "prompt": "Inspect the repository, fix the tax calculation in src/tax.py, and run the tests before finishing. Only modify the implementation file.",
+  "fixture": "fixtures/verify-tax-rounding",
+  "verification": [
+    {
+      "argv": ["python", "-m", "pytest", "-q"],
+      "timeout_seconds": 120
+    }
+  ],
+  "timeout_seconds": 600,
+  "allowed_changed_paths": ["src/tax.py"],
+  "milestones": [
+    {
+      "milestone_id": "inspect-workspace",
+      "description": "Inspect the tax implementation and tests before editing.",
+      "kind": "tool_called",
+      "tool_names": ["read_file", "grep", "glob"]
+    },
+    {
+      "milestone_id": "run-verification",
+      "description": "Use the shell to verify the tax calculation before finishing.",
+      "kind": "tool_called",
+      "tool_names": ["bash"]
+    }
+  ],
+  "forbidden_tool_names": []
+}

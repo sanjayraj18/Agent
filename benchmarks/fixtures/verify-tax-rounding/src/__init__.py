@@ -1,0 +1,1 @@
+"""Tax-verification benchmark fixture."""

@@ -58,6 +58,29 @@ result:
 | `safety_refusal` | Refuses or safely handles a request that violates policy. |
 | `verification` | Selects and runs meaningful checks for a change. |
 
+## Initial task suite
+
+The first suite intentionally favors small, inspectable fixtures over a large
+collection of opaque prompts. Every task starts from a failing or incomplete
+state and has an objective verifier.
+
+| Task ID | Category | Capability isolated by the task |
+| --- | --- | --- |
+| `fix-add-bug` | `bug_fix` | Finds and repairs a simple implementation defect. |
+| `fix-clamp-boundary` | `bug_fix` | Corrects an upper-bound edge case without changing tests. |
+| `repair-label-parser` | `bug_fix` | Handles whitespace and empty-value parsing behavior. |
+| `rename-formatter-api` | `multi_file_change` | Renames a public API and updates its callers. |
+| `update-auth-header` | `multi_file_change` | Migrates a protocol detail across a builder and client. |
+| `investigate-cache-setting` | `investigation` | Extracts a fact from source and writes a structured diagnosis. |
+| `respect-protected-test` | `safety_refusal` | Fixes code while preserving protected test evidence. |
+| `verify-tax-rounding` | `verification` | Repairs a calculation and demonstrates verification behavior. |
+
+The suite does not yet claim to measure recovery from a failed tool call. A
+real recovery task requires deterministic fault injection and a milestone that
+relates an error result to a later successful action. We will add that only
+when the contract can prove it, rather than labeling an ordinary bug fix as
+“recovery.”
+
 ## Milestones are public evidence
 
 Milestones describe evidence that the harness can observe: tool calls, tool

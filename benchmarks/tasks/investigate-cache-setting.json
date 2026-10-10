@@ -1,0 +1,30 @@
+{
+  "task_id": "investigate-cache-setting",
+  "title": "Investigate a cache timeout setting",
+  "category": "investigation",
+  "prompt": "Inspect the repository to determine the configured cache timeout for the worker. Create diagnosis.json containing exactly the setting name, its integer value, and its unit. Run the tests. Only create diagnosis.json; do not modify source or tests.",
+  "fixture": "fixtures/investigate-cache-setting",
+  "verification": [
+    {
+      "argv": ["python", "-m", "pytest", "-q"],
+      "timeout_seconds": 120
+    }
+  ],
+  "timeout_seconds": 600,
+  "allowed_changed_paths": ["diagnosis.json"],
+  "milestones": [
+    {
+      "milestone_id": "inspect-settings",
+      "description": "Inspect the repository configuration before writing the diagnosis.",
+      "kind": "tool_called",
+      "tool_names": ["read_file", "grep", "glob"]
+    },
+    {
+      "milestone_id": "run-verification",
+      "description": "Use the shell to verify the diagnosis file before finishing.",
+      "kind": "tool_called",
+      "tool_names": ["bash"]
+    }
+  ],
+  "forbidden_tool_names": []
+}

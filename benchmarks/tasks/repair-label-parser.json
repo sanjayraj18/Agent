@@ -1,0 +1,30 @@
+{
+  "task_id": "repair-label-parser",
+  "title": "Repair whitespace handling in a label parser",
+  "category": "bug_fix",
+  "prompt": "Inspect the repository, repair the label parser in src/labels.py, and run the tests. Only modify the implementation file.",
+  "fixture": "fixtures/repair-label-parser",
+  "verification": [
+    {
+      "argv": ["python", "-m", "pytest", "-q"],
+      "timeout_seconds": 120
+    }
+  ],
+  "timeout_seconds": 600,
+  "allowed_changed_paths": ["src/labels.py"],
+  "milestones": [
+    {
+      "milestone_id": "inspect-workspace",
+      "description": "Inspect the parser and its tests before editing.",
+      "kind": "tool_called",
+      "tool_names": ["read_file", "grep", "glob"]
+    },
+    {
+      "milestone_id": "run-verification",
+      "description": "Use the shell to verify the parser repair before finishing.",
+      "kind": "tool_called",
+      "tool_names": ["bash"]
+    }
+  ],
+  "forbidden_tool_names": []
+}
