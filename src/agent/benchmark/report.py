@@ -10,6 +10,7 @@ from agent.benchmark.comparison import BenchmarkComparison
 from agent.benchmark.models import (
     BenchmarkRunResult,
     DiagnosisReport,
+    QualityReview,
     RegressionGateResult,
     ScoreboardRow,
 )
@@ -24,6 +25,31 @@ def write_run_results(
         path,
         {"runs": [result.model_dump(mode="json") for result in results]},
     )
+
+
+def read_run_results(path: Path) -> tuple[BenchmarkRunResult, ...]:
+    """Load immutable per-attempt results written by ``write_run_results``."""
+    try:
+        decoded = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"could not read benchmark results {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path}: invalid benchmark results JSON ({exc})") from exc
+
+    values = decoded.get("runs") if isinstance(decoded, dict) else None
+    if not isinstance(values, list):
+        raise ValueError(f"{path}: benchmark results must contain a runs list")
+
+    try:
+        results = tuple(BenchmarkRunResult.model_validate(value) for value in values)
+    except Exception as exc:
+        raise ValueError(f"{path}: invalid benchmark run result ({exc})") from exc
+
+    run_ids = [result.run_id for result in results]
+    if len(run_ids) != len(set(run_ids)):
+        raise ValueError(f"{path}: benchmark results contain duplicate run IDs")
+
+    return results
 
 
 def write_scoreboard(path: Path, rows: tuple[ScoreboardRow, ...]) -> None:
@@ -54,6 +80,16 @@ def write_regression_gate(
     _write_json(path.with_suffix(".json"), result.model_dump(mode="json"))
     path.write_text(
         render_regression_gate_markdown(result),
+        encoding="utf-8",
+    )
+
+
+def write_quality_review(path: Path, review: QualityReview) -> None:
+    """Persist a safe replay timeline and its linked diagnosis evidence."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(path.with_suffix(".json"), review.model_dump(mode="json"))
+    path.write_text(
+        render_quality_review_markdown(review),
         encoding="utf-8",
     )
 
@@ -221,6 +257,91 @@ def render_diagnosis_markdown(report: DiagnosisReport) -> str:
     return "\n".join(lines)
 
 
+def render_quality_review_markdown(review: QualityReview) -> str:
+    """Render one safe event timeline for an engineering follow-up."""
+    run = review.run
+    diagnosis = review.diagnosis
+    replay = review.replay
+    focus_sequences = {
+        evidence.event_sequence
+        for evidence in diagnosis.evidence
+        if evidence.event_sequence is not None
+    }
+    lines = [
+        "# Agent benchmark quality review",
+        "",
+        f"Task: `{run.task_id}`",
+        f"Run: `{run.run_id}` (attempt {run.attempt})",
+        f"Status: **{run.status.value.upper()}**",
+        f"Diagnosis: **{diagnosis.category.value.replace('_', ' ').upper()}**",
+        "",
+        "## Immutable evidence",
+        "",
+        f"Trajectory: `{replay.reference.relative_path}`",
+        f"SHA-256: `{replay.reference.sha256}`",
+        f"Recorded events: {replay.reference.event_count}",
+        "",
+        "## Engineering diagnosis",
+        "",
+        _single_line(diagnosis.summary),
+        "",
+        "**Suggested next step**",
+        "",
+        _single_line(diagnosis.suggested_next_step),
+        "",
+        "**Evidence**",
+        "",
+    ]
+
+    for evidence in diagnosis.evidence:
+        event_suffix = (
+            f" (event {evidence.event_sequence})"
+            if evidence.event_sequence is not None
+            else ""
+        )
+        lines.append(
+            f"- `{evidence.source.value}`: "
+            f"{_single_line(evidence.message)}{event_suffix}"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Event timeline",
+            "",
+            "| Seq | Event | What happened | Focus |",
+            "| ---: | --- | --- | --- |",
+        ]
+    )
+    for event in replay.events:
+        focus = "diagnosis evidence" if event.sequence in focus_sequences else ""
+        lines.append(
+            "| "
+            f"{event.sequence} | `{event.event_type}` | "
+            f"{_markdown_cell(event.summary)} | {focus} |"
+        )
+
+    if replay.suppressed_private_event_count:
+        lines.extend(
+            [
+                "",
+                "Private reasoning events omitted: "
+                f"{replay.suppressed_private_event_count}.",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "The timeline excludes raw user prompts, assistant text, tool "
+            "arguments, tool output, and private reasoning. The JSONL "
+            "trajectory remains the integrity-checked source evidence.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def render_regression_gate_markdown(
     result: RegressionGateResult,
 ) -> str:
@@ -368,6 +489,11 @@ def _format_reliability(
 def _single_line(value: str) -> str:
     """Keep external error text from breaking the Markdown structure."""
     return " ".join(value.split())
+
+
+def _markdown_cell(value: str) -> str:
+    """Keep table cell data to one Markdown cell even for external strings."""
+    return _single_line(value).replace("|", "\\|")
 
 
 def _comparison_baseline_line(row: ScoreboardRow) -> str:

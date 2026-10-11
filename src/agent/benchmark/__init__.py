@@ -20,6 +20,8 @@ from agent.benchmark.gate import (
     load_gate_policy,
     load_quality_snapshot,
 )
+from agent.benchmark.replay import replay_trajectory
+from agent.benchmark.review import ReviewError, build_quality_review
 from agent.benchmark.models import (
     BenchmarkRunConfig,
     BenchmarkRunResult,
@@ -41,11 +43,14 @@ from agent.benchmark.models import (
     MilestoneKind,
     MilestoneResult,
     MilestoneSpec,
-    RunDiagnosis,
+    QualityReview,
     QualitySnapshot,
+    ReplayEvent,
     RegressionGateResult,
+    RunDiagnosis,
     ScoreboardRow,
     TaskCategory,
+    TrajectoryReplay,
 )
 from agent.benchmark.runner import BenchmarkRunner
 
@@ -79,16 +84,22 @@ __all__ = [
     "MilestoneKind",
     "MilestoneResult",
     "MilestoneSpec",
-    "RunDiagnosis",
+    "QualityReview",
     "QualitySnapshot",
+    "ReplayEvent",
     "RegressionGateResult",
+    "ReviewError",
+    "RunDiagnosis",
     "ScoreboardRow",
     "TaskCategory",
+    "TrajectoryReplay",
     "compare_scoreboard_rows",
     "diagnose_run",
     "build_diagnosis_report",
     "evaluate_regression_gate",
     "load_gate_policy",
     "load_quality_snapshot",
+    "replay_trajectory",
+    "build_quality_review",
     "summarize_diagnoses",
 ]

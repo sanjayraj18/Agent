@@ -24,17 +24,22 @@ from agent.benchmark.models import (
     BenchmarkRunConfig,
     BenchmarkRunResult,
     DiagnosisReport,
+    QualityReview,
     RegressionGateResult,
     ScoreboardRow,
 )
 from agent.benchmark.report import (
+    read_diagnosis_report,
+    read_run_results,
     read_scoreboard,
     write_diagnosis_report,
+    write_quality_review,
     write_regression_gate,
     write_comparison,
     write_run_results,
     write_scoreboard,
 )
+from agent.benchmark.review import build_quality_review
 from agent.benchmark.runner import AgentAttempt, BenchmarkRunner
 from agent.benchmark.scoreboard import build_scoreboard_row
 from agent.events import Event
@@ -64,6 +69,14 @@ class BenchmarkGateExecution:
 
     result: RegressionGateResult
     gate_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkReviewExecution:
+    """Saved evidence produced by replaying one completed benchmark attempt."""
+
+    review: QualityReview
+    review_path: Path
 
 
 async def run_benchmark(
@@ -247,4 +260,48 @@ def evaluate_saved_regression_gate(
     return BenchmarkGateExecution(
         result=result,
         gate_path=resolved_output_path,
+    )
+
+
+def review_saved_benchmark_run(
+    *,
+    results_path: Path,
+    diagnosis_path: Path,
+    trajectories_root: Path,
+    run_id: str,
+    output_path: Path,
+) -> BenchmarkReviewExecution:
+    """Replay one saved attempt without rerunning the agent or its tools."""
+    normalized_run_id = run_id.strip()
+    if not normalized_run_id:
+        raise ValueError("run_id must not be blank")
+
+    results = read_run_results(results_path.expanduser().resolve())
+    match = next(
+        (
+            result
+            for result in results
+            if result.run_id == normalized_run_id
+        ),
+        None,
+    )
+    if match is None:
+        raise ValueError(
+            f"results do not contain run_id {normalized_run_id!r}"
+        )
+
+    diagnosis_report = read_diagnosis_report(
+        diagnosis_path.expanduser().resolve()
+    )
+    review = build_quality_review(
+        result=match,
+        diagnosis_report=diagnosis_report,
+        trajectories_root=trajectories_root.expanduser().resolve(),
+    )
+    resolved_output_path = output_path.expanduser().resolve()
+    write_quality_review(resolved_output_path, review)
+
+    return BenchmarkReviewExecution(
+        review=review,
+        review_path=resolved_output_path,
     )

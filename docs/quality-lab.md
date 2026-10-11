@@ -197,3 +197,27 @@ agent bench gate \
 The command writes `gate.md` and `gate.json`. A rejected candidate still
 writes both artifacts, then exits with status `1`, which makes it suitable for
 CI later. Invalid or incomparable evidence exits with status `2`.
+
+## Replay a rejected attempt
+
+A rejected gate tells you that a candidate regressed. It does not by itself
+show which attempt or event caused the failure. Each benchmark attempt already
+has an immutable JSONL trajectory. Replay one exact run to create a compact
+engineering review without calling a model again, invoking tools, or changing
+any workspace:
+
+```bash
+agent bench review \
+  --results benchmarks/results/candidate/runs/fix-add-bug/<fingerprint>/results.json \
+  --diagnosis benchmarks/results/candidate/runs/fix-add-bug/<fingerprint>/diagnosis.json \
+  --trajectories-root benchmarks/results/candidate/trajectories \
+  --run-id fix-add-bug-002-<run-suffix> \
+  --output benchmarks/results/candidate/reviews/fix-add-bug-002.md
+```
+
+The command verifies the trajectory's SHA-256 digest before writing both the
+Markdown review and its JSON counterpart. The review links diagnosis evidence
+to a numbered event timeline, so a policy violation at event 14 points to that
+event directly. It intentionally omits private reasoning, raw user prompts,
+assistant text, tool arguments, and tool output; the original JSONL stays as
+the integrity-checked source evidence.

@@ -1148,6 +1148,90 @@ class RegressionGateResult(BaseModel):
         return self
 
 
+class ReplayEvent(BaseModel):
+    """One safe, human-readable entry in a benchmark trajectory replay.
+
+    It intentionally contains a summary rather than the raw event payload.
+    This makes a review useful without exporting user prompts, tool arguments,
+    tool output, or private model reasoning into another report.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    sequence: int = Field(ge=1)
+    event_type: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+
+
+class TrajectoryReplay(BaseModel):
+    """An integrity-checked, privacy-preserving view of one JSONL trajectory."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    reference: TrajectoryReference
+    events: tuple[ReplayEvent, ...] = ()
+    suppressed_private_event_count: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_event_coverage(self) -> TrajectoryReplay:
+        if (
+            len(self.events) + self.suppressed_private_event_count
+            != self.reference.event_count
+        ):
+            raise ValueError(
+                "replay events plus suppressed private events must match "
+                "the trajectory event count"
+            )
+
+        sequences = [event.sequence for event in self.events]
+        if sequences != sorted(sequences):
+            raise ValueError("replay events must be ordered by sequence")
+
+        if len(sequences) != len(set(sequences)):
+            raise ValueError("replay event sequences must be unique")
+
+        return self
+
+
+class QualityReview(BaseModel):
+    """Read-only engineering review of one saved benchmark attempt."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    run: BenchmarkRunResult
+    diagnosis: RunDiagnosis
+    replay: TrajectoryReplay
+
+    @model_validator(mode="after")
+    def validate_evidence_alignment(self) -> QualityReview:
+        if self.diagnosis.run_id != self.run.run_id:
+            raise ValueError("review diagnosis must match the run ID")
+
+        if self.diagnosis.task_id != self.run.task_id:
+            raise ValueError("review diagnosis must match the task ID")
+
+        if self.diagnosis.attempt != self.run.attempt:
+            raise ValueError("review diagnosis must match the run attempt")
+
+        if self.diagnosis.run_status is not self.run.status:
+            raise ValueError("review diagnosis must match the run status")
+
+        if self.replay.reference != self.run.trajectory:
+            raise ValueError("review replay must match the run trajectory")
+
+        replay_sequences = {event.sequence for event in self.replay.events}
+        for evidence in self.diagnosis.evidence:
+            if (
+                evidence.event_sequence is not None
+                and evidence.event_sequence not in replay_sequences
+            ):
+                raise ValueError(
+                    "diagnosis event evidence must exist in the replay"
+                )
+
+        return self
+
+
 class ReliabilityPoint(BaseModel):
     """
     Reliability estimates for one retry budget k.

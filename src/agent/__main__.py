@@ -991,6 +991,40 @@ def main() -> None:
         help="where to write gate.md and gate.json",
     )
 
+    bench_review = bench_sub.add_parser(
+        "review",
+        help="replay one saved benchmark attempt without rerunning it",
+    )
+    bench_review.add_argument(
+        "--results",
+        type=Path,
+        required=True,
+        help="results.json containing the attempt to review",
+    )
+    bench_review.add_argument(
+        "--diagnosis",
+        type=Path,
+        required=True,
+        help="diagnosis.json created with the selected benchmark run",
+    )
+    bench_review.add_argument(
+        "--trajectories-root",
+        type=Path,
+        required=True,
+        help="directory containing recorded trajectory JSONL files",
+    )
+    bench_review.add_argument(
+        "--run-id",
+        required=True,
+        help="exact failed or passing run ID to replay",
+    )
+    bench_review.add_argument(
+        "--output",
+        type=Path,
+        default=Path("benchmarks/results/review.md"),
+        help="where to write review.md and review.json",
+    )
+
     run = sub.add_parser("run", help="send one prompt and stream the reply")
     run.add_argument("prompt")
     run.add_argument(
@@ -1103,7 +1137,7 @@ def main() -> None:
 
     if args.command in {"run", "serve", "bench"} and not (
         args.command == "bench"
-        and args.bench_command in {"report", "compare", "gate"}
+        and args.bench_command in {"report", "compare", "gate", "review"}
     ):
         capabilities = capabilities_for_model(settings["model"])
 
@@ -1178,6 +1212,29 @@ def main() -> None:
         print(f"gate report: {execution.gate_path}")
         if result.decision.value == "rejected":
             raise SystemExit(1)
+        return
+
+    if args.command == "bench" and args.bench_command == "review":
+        from agent.benchmark.cli import review_saved_benchmark_run
+
+        try:
+            execution = review_saved_benchmark_run(
+                results_path=args.results,
+                diagnosis_path=args.diagnosis,
+                trajectories_root=args.trajectories_root,
+                run_id=args.run_id,
+                output_path=args.output,
+            )
+        except ValueError as exc:
+            print(f"benchmark review error: {exc}", file=sys.stderr)
+            raise SystemExit(2)
+
+        review = execution.review
+        print(
+            f"reviewed {review.run.run_id}: "
+            f"{review.diagnosis.category.value}"
+        )
+        print(f"review: {execution.review_path}")
         return
 
     try:
