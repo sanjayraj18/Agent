@@ -10,6 +10,7 @@ from agent.benchmark.comparison import BenchmarkComparison
 from agent.benchmark.models import (
     BenchmarkRunResult,
     DiagnosisReport,
+    RegressionGateResult,
     ScoreboardRow,
 )
 
@@ -40,6 +41,19 @@ def write_diagnosis_report(path: Path, report: DiagnosisReport) -> None:
     _write_json(path.with_suffix(".json"), report.model_dump(mode="json"))
     path.write_text(
         render_diagnosis_markdown(report),
+        encoding="utf-8",
+    )
+
+
+def write_regression_gate(
+    path: Path,
+    result: RegressionGateResult,
+) -> None:
+    """Persist a machine-readable and reviewable gate decision."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(path.with_suffix(".json"), result.model_dump(mode="json"))
+    path.write_text(
+        render_regression_gate_markdown(result),
         encoding="utf-8",
     )
 
@@ -204,6 +218,64 @@ def render_diagnosis_markdown(report: DiagnosisReport) -> str:
                 ]
             )
 
+    return "\n".join(lines)
+
+
+def render_regression_gate_markdown(
+    result: RegressionGateResult,
+) -> str:
+    """Render an auditable accepted/rejected candidate decision."""
+    baseline = result.baseline.scoreboard
+    candidate = result.candidate.scoreboard
+    lines = [
+        "# Agent regression gate",
+        "",
+        f"Decision: **{result.decision.value.upper()}**",
+        f"Policy: `{result.policy.policy_id}`",
+        f"Task: `{baseline.task_id}`",
+        "",
+        "## Evidence",
+        "",
+        "| Evidence | Baseline | Candidate |",
+        "| --- | --- | --- |",
+        "| Configuration fingerprint | "
+        f"`{baseline.config_fingerprint}` | "
+        f"`{candidate.config_fingerprint}` |",
+        "| Agent revision | "
+        f"`{baseline.agent_revision}` | `{candidate.agent_revision}` |",
+        "| Provider / model | "
+        f"{baseline.provider} / {baseline.model} | "
+        f"{candidate.provider} / {candidate.model} |",
+        "",
+        "## Checks",
+        "",
+        "| Rule | Baseline | Candidate | Requirement | Result |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+
+    for check in result.checks:
+        status = "Pass" if check.passed else "Fail"
+        lines.append(
+            "| "
+            f"{check.rule.value.replace('_', ' ')} | "
+            f"{_single_line(check.baseline_value)} | "
+            f"{_single_line(check.candidate_value)} | "
+            f"{_single_line(check.requirement)} | {status} |"
+        )
+
+    failed_checks = tuple(check for check in result.checks if not check.passed)
+    lines.extend(["", "## Decision details", ""])
+    if not failed_checks:
+        lines.append("Every configured quality rule passed.")
+    else:
+        lines.append("The candidate was rejected because:")
+        lines.append("")
+        for check in failed_checks:
+            lines.append(
+                f"- `{check.rule.value}`: {_single_line(check.message)}"
+            )
+
+    lines.append("")
     return "\n".join(lines)
 
 

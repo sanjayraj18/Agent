@@ -1021,6 +1021,133 @@ class DiagnosisReport(BaseModel):
         return self
 
 
+class GateDecision(StrEnum):
+    """Whether a candidate met every required regression-gate rule."""
+
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
+class GateRule(StrEnum):
+    """Named checks emitted by the deterministic regression gate."""
+
+    MINIMUM_PASS_RATE = "minimum_pass_rate"
+    STRICT_RELIABILITY = "strict_reliability"
+    ZERO_POLICY_VIOLATIONS = "zero_policy_violations"
+    KNOWN_COST = "known_cost"
+    COST_INCREASE = "cost_increase"
+    DURATION_INCREASE = "duration_increase"
+
+
+class GatePolicy(BaseModel):
+    """Explicit quality limits used to evaluate one candidate benchmark run."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    policy_id: str = Field(
+        min_length=3,
+        pattern=r"^[a-z0-9][a-z0-9_-]*$",
+    )
+    minimum_pass_rate: Decimal = Field(
+        default=Decimal("0.80"),
+        ge=Decimal("0"),
+        le=Decimal("1"),
+    )
+    strict_reliability_k: int = Field(default=3, ge=1)
+    maximum_strict_reliability_drop: Decimal = Field(
+        default=Decimal("0.05"),
+        ge=Decimal("0"),
+        le=Decimal("1"),
+    )
+    require_zero_policy_violations: bool = True
+    require_known_cost: bool = True
+    maximum_cost_increase_fraction: Decimal | None = Field(
+        default=Decimal("0.20"),
+        ge=Decimal("0"),
+    )
+    maximum_duration_increase_fraction: Decimal | None = Field(
+        default=None,
+        ge=Decimal("0"),
+    )
+
+
+class QualitySnapshot(BaseModel):
+    """Scoreboard and diagnosis evidence for one benchmark configuration."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    scoreboard: ScoreboardRow
+    diagnosis_report: DiagnosisReport
+
+    @model_validator(mode="after")
+    def validate_evidence_alignment(self) -> QualitySnapshot:
+        if (
+            self.scoreboard.config_fingerprint
+            != self.diagnosis_report.config_fingerprint
+        ):
+            raise ValueError(
+                "scoreboard and diagnosis report configuration fingerprints "
+                "must match"
+            )
+
+        summary = self.diagnosis_report.summary
+        if summary.task_id != self.scoreboard.task_id:
+            raise ValueError(
+                "scoreboard and diagnosis report task IDs must match"
+            )
+
+        if summary.total_runs != self.scoreboard.attempts:
+            raise ValueError(
+                "diagnosis total_runs must match scoreboard attempts"
+            )
+
+        if summary.passed_runs != self.scoreboard.passed_attempts:
+            raise ValueError(
+                "diagnosis passed_runs must match scoreboard passed_attempts"
+            )
+
+        return self
+
+
+class GateCheck(BaseModel):
+    """One transparent requirement evaluated by a regression gate."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    rule: GateRule
+    passed: bool
+    baseline_value: str = Field(min_length=1)
+    candidate_value: str = Field(min_length=1)
+    requirement: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+
+
+class RegressionGateResult(BaseModel):
+    """Auditable accept/reject decision for one baseline and candidate pair."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    policy: GatePolicy
+    baseline: QualitySnapshot
+    candidate: QualitySnapshot
+    decision: GateDecision
+    checks: tuple[GateCheck, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_decision(self) -> RegressionGateResult:
+        expected = (
+            GateDecision.ACCEPTED
+            if all(check.passed for check in self.checks)
+            else GateDecision.REJECTED
+        )
+        if self.decision is not expected:
+            raise ValueError(
+                "gate decision must match the outcomes of every check"
+            )
+
+        return self
+
+
 class ReliabilityPoint(BaseModel):
     """
     Reliability estimates for one retry budget k.

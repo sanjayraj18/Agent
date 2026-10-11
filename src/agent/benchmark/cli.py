@@ -13,17 +13,24 @@ from agent.benchmark.comparison import (
     compare_scoreboard_rows,
 )
 from agent.benchmark.diagnosis import build_diagnosis_report, diagnose_run
+from agent.benchmark.gate import (
+    evaluate_regression_gate,
+    load_gate_policy,
+    load_quality_snapshot,
+)
 from agent.benchmark.git_info import read_git_provenance, require_clean_tree
 from agent.benchmark.images import DockerCommandExecutor
 from agent.benchmark.models import (
     BenchmarkRunConfig,
     BenchmarkRunResult,
     DiagnosisReport,
+    RegressionGateResult,
     ScoreboardRow,
 )
 from agent.benchmark.report import (
     read_scoreboard,
     write_diagnosis_report,
+    write_regression_gate,
     write_comparison,
     write_run_results,
     write_scoreboard,
@@ -49,6 +56,14 @@ class BenchmarkComparisonExecution:
 
     comparison: BenchmarkComparison
     comparison_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkGateExecution:
+    """Saved evidence produced by a baseline-versus-candidate gate."""
+
+    result: RegressionGateResult
+    gate_path: Path
 
 
 async def run_benchmark(
@@ -199,4 +214,37 @@ def compare_benchmark_scoreboards(
     return BenchmarkComparisonExecution(
         comparison=comparison,
         comparison_path=resolved_output_path,
+    )
+
+
+def evaluate_saved_regression_gate(
+    *,
+    baseline_scoreboard_path: Path,
+    baseline_diagnosis_path: Path,
+    candidate_scoreboard_path: Path,
+    candidate_diagnosis_path: Path,
+    policy_path: Path,
+    output_path: Path,
+) -> BenchmarkGateExecution:
+    """Load immutable artifacts, gate the candidate, and save the decision."""
+    policy = load_gate_policy(policy_path.expanduser().resolve())
+    baseline = load_quality_snapshot(
+        scoreboard_path=baseline_scoreboard_path.expanduser().resolve(),
+        diagnosis_path=baseline_diagnosis_path.expanduser().resolve(),
+    )
+    candidate = load_quality_snapshot(
+        scoreboard_path=candidate_scoreboard_path.expanduser().resolve(),
+        diagnosis_path=candidate_diagnosis_path.expanduser().resolve(),
+    )
+    result = evaluate_regression_gate(
+        baseline=baseline,
+        candidate=candidate,
+        policy=policy,
+    )
+    resolved_output_path = output_path.expanduser().resolve()
+    write_regression_gate(resolved_output_path, result)
+
+    return BenchmarkGateExecution(
+        result=result,
+        gate_path=resolved_output_path,
     )

@@ -950,6 +950,47 @@ def main() -> None:
         default=Path("benchmarks/results/comparison.md"),
     )
 
+    bench_gate = bench_sub.add_parser(
+        "gate",
+        help="accept or reject a candidate benchmark configuration",
+    )
+    bench_gate.add_argument(
+        "--baseline-scoreboard",
+        type=Path,
+        required=True,
+        help="scoreboard JSON containing the known-good baseline row",
+    )
+    bench_gate.add_argument(
+        "--baseline-diagnosis",
+        type=Path,
+        required=True,
+        help="diagnosis JSON created for the baseline benchmark run",
+    )
+    bench_gate.add_argument(
+        "--candidate-scoreboard",
+        type=Path,
+        required=True,
+        help="scoreboard JSON containing the candidate row",
+    )
+    bench_gate.add_argument(
+        "--candidate-diagnosis",
+        type=Path,
+        required=True,
+        help="diagnosis JSON created for the candidate benchmark run",
+    )
+    bench_gate.add_argument(
+        "--policy",
+        type=Path,
+        default=Path("benchmarks/gates/default.json"),
+        help="JSON quality policy defining the gate thresholds",
+    )
+    bench_gate.add_argument(
+        "--output",
+        type=Path,
+        default=Path("benchmarks/results/gate.md"),
+        help="where to write gate.md and gate.json",
+    )
+
     run = sub.add_parser("run", help="send one prompt and stream the reply")
     run.add_argument("prompt")
     run.add_argument(
@@ -1062,7 +1103,7 @@ def main() -> None:
 
     if args.command in {"run", "serve", "bench"} and not (
         args.command == "bench"
-        and args.bench_command in {"report", "compare"}
+        and args.bench_command in {"report", "compare", "gate"}
     ):
         capabilities = capabilities_for_model(settings["model"])
 
@@ -1114,6 +1155,29 @@ def main() -> None:
             f"against {comparison.baseline.strategy_id!r}"
         )
         print(f"comparison: {execution.comparison_path}")
+        return
+
+    if args.command == "bench" and args.bench_command == "gate":
+        from agent.benchmark.cli import evaluate_saved_regression_gate
+
+        try:
+            execution = evaluate_saved_regression_gate(
+                baseline_scoreboard_path=args.baseline_scoreboard,
+                baseline_diagnosis_path=args.baseline_diagnosis,
+                candidate_scoreboard_path=args.candidate_scoreboard,
+                candidate_diagnosis_path=args.candidate_diagnosis,
+                policy_path=args.policy,
+                output_path=args.output,
+            )
+        except ValueError as exc:
+            print(f"benchmark gate error: {exc}", file=sys.stderr)
+            raise SystemExit(2)
+
+        result = execution.result
+        print(f"regression gate: {result.decision.value.upper()}")
+        print(f"gate report: {execution.gate_path}")
+        if result.decision.value == "rejected":
+            raise SystemExit(1)
         return
 
     try:

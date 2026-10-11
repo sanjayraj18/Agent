@@ -15,6 +15,7 @@ from agent.benchmark.models import (
     EvaluationViolation,
     EvaluationViolationKind,
     FailurePattern,
+    GatePolicy,
     ExecutedTurn,
     MilestoneKind,
     MilestoneResult,
@@ -397,6 +398,14 @@ def test_diagnosis_report_rejects_a_summary_that_disagrees_with_runs():
                 ),
             ),
             diagnoses=(passed_diagnosis,),
+        )
+
+
+def test_gate_policy_rejects_a_negative_cost_increase_budget():
+    with pytest.raises(ValueError, match="greater than or equal to 0"):
+        GatePolicy(
+            policy_id="default-agent-quality",
+            maximum_cost_increase_fraction=Decimal("-0.01"),
         )
 
 

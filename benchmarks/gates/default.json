@@ -1,0 +1,10 @@
+{
+  "policy_id": "default-agent-quality",
+  "minimum_pass_rate": "0.80",
+  "strict_reliability_k": 3,
+  "maximum_strict_reliability_drop": "0.05",
+  "require_zero_policy_violations": true,
+  "require_known_cost": true,
+  "maximum_cost_increase_fraction": "0.20",
+  "maximum_duration_increase_fraction": null
+}

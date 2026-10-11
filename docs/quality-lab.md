@@ -167,3 +167,33 @@ The final deterministic verification passed.
 
 One pass is useful evidence, not proof of reliability. Repeated isolated runs
 will later measure `pass^1`, `pass^k`, cost, latency, and failure patterns.
+
+## Regression gates
+
+A comparison describes measured trade-offs. A regression gate applies an
+explicit policy to a known-good baseline and a proposed candidate, then emits
+either `accepted` or `rejected`. It does not deploy, roll back, or alter the
+agent.
+
+The default policy lives at `benchmarks/gates/default.json`. Its limits are
+data, not hidden Python constants. It requires a minimum pass rate, limits a
+drop in strict `pass^3` reliability, rejects policy violations, requires known
+cost, and limits cost growth.
+
+Run a baseline and candidate against the same task fixture, container image,
+and number of attempts. Each run creates a global scoreboard JSON and a
+per-configuration diagnosis JSON. Then gate them:
+
+```bash
+agent bench gate \
+  --baseline-scoreboard benchmarks/results/baseline/scoreboard.json \
+  --baseline-diagnosis benchmarks/results/baseline/runs/fix-add-bug/<fingerprint>/diagnosis.json \
+  --candidate-scoreboard benchmarks/results/candidate/scoreboard.json \
+  --candidate-diagnosis benchmarks/results/candidate/runs/fix-add-bug/<fingerprint>/diagnosis.json \
+  --policy benchmarks/gates/default.json \
+  --output benchmarks/results/gate.md
+```
+
+The command writes `gate.md` and `gate.json`. A rejected candidate still
+writes both artifacts, then exits with status `1`, which makes it suitable for
+CI later. Invalid or incomparable evidence exits with status `2`.
